@@ -1,0 +1,42 @@
+# Dependencies and build artifacts
+.venv/
+venv/
+__pycache__/
+*.egg-info/
+build/
+dist/
+
+# Test and lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated data
+data/
+*.ics
+backups/
+
+# Tokens and secrets (also in .gitignore but listed here for safety)
+.garminconnect/
+.withings_tokens
+.env
+.env.*
+
+# OS and IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Notebooks and ad-hoc scripts
+.ipynb_checkpoints/
+*.ipynb
+
+# Local databases
+*.db
+*.sqlite*
+
+# Logs
+*.log
+logs/
