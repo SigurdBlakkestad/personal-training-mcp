@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     LOG_LEVEL: str = "INFO"
 
+    STRAVA_CLIENT_ID: str = ""
+    STRAVA_CLIENT_SECRET: str = ""
+    STRAVA_REFRESH_TOKEN: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
