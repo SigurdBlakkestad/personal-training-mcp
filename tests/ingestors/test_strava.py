@@ -285,7 +285,7 @@ def test_rate_limit_no_pause_under_threshold() -> None:
     assert pauses == []
 
 
-def test_default_since_30_days_when_no_prior_run() -> None:
+def test_default_since_365_days_when_no_prior_run() -> None:
     captured_after: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -298,12 +298,12 @@ def test_default_since_30_days_when_no_prior_run() -> None:
     ingestor = StravaIngestor(http_client=client)
     session = _make_session(latest_run=None)
 
-    before = datetime.now(UTC) - timedelta(days=30)
+    before = datetime.now(UTC) - timedelta(days=365)
     try:
         ingestor._sync(session, since=None)
     finally:
         client.close()
-    after = datetime.now(UTC) - timedelta(days=30)
+    after = datetime.now(UTC) - timedelta(days=365)
 
     assert len(captured_after) == 1
     assert int(before.timestamp()) - 5 <= captured_after[0] <= int(after.timestamp()) + 5

@@ -17,7 +17,7 @@ from training_pipeline.shared.models import IngestionRun
 logger = get_logger(__name__)
 
 STRAVA_API_BASE = "https://www.strava.com"
-STRAVA_DEFAULT_LOOKBACK_DAYS = 30
+STRAVA_DEFAULT_LOOKBACK_DAYS = 365
 STRAVA_PAGE_SIZE = 200
 STRAVA_RATE_WINDOW_SECONDS = 900
 STRAVA_RATE_LIMIT_THRESHOLD = 0.9
