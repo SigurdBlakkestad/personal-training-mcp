@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     STRAVA_CLIENT_SECRET: str = ""
     STRAVA_REFRESH_TOKEN: str = ""
 
+    ATHLETE_FTP: int = 200
+
 
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]

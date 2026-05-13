@@ -154,6 +154,26 @@ class WeeklyPlan(Base):
     )
 
 
+class DerivedMetric(Base):
+    __tablename__ = "derived_metrics"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    metric_name: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[float] = mapped_column(REAL, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("date", "metric_name", name="uq_derived_metrics_date_metric"),
+    )
+
+
 class IngestionRun(Base):
     __tablename__ = "ingestion_runs"
 
