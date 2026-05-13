@@ -15,7 +15,7 @@ Once Steps 1-11 of the build plan are complete, the system runs without you:
 06:35 UTC   Publish .ics calendar (triggered after notion mirror)
 ```
 
-All on GitHub Actions. View runs at `github.com/<user>/training-pipeline/actions`.
+All on GitHub Actions. View runs at `github.com/<user>/personal-training-mcp/actions`.
 
 ## Weekly rhythm (you)
 
@@ -89,7 +89,7 @@ iOS polls subscribed calendars at intervals it chooses (15 min – several hours
 1. Open the Calendar app
 2. Pull down on the inbox view to refresh
 
-If still not updating, check that `https://<your-username>.github.io/training-pipeline/training.ics` returns the latest content in a browser. If it does but iPhone doesn't show it: delete the subscribed calendar (Settings → Calendar → Accounts → tap the subscribed calendar → Delete Account) and re-add it.
+If still not updating, check that `https://<your-username>.github.io/personal-training-mcp/training.ics` returns the latest content in a browser. If it does but iPhone doesn't show it: delete the subscribed calendar (Settings → Calendar → Accounts → tap the subscribed calendar → Delete Account) and re-add it.
 
 ### "GitHub Actions failing on every step with 'context access might be invalid'"
 

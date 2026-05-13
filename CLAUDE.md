@@ -1,4 +1,4 @@
-# training-pipeline
+# personal-training-mcp
 
 Personal training data platform. Ingests Strava, Withings, and Garmin into Postgres on Supabase. Exposes coaching tools to Claude via a custom MCP server. Mirrors readable views to Notion and the iPhone calendar.
 
@@ -23,6 +23,10 @@ These commands exist after Step 1. Until then, only the project root and these d
 ## Pre-commit
 
 Ruff, mypy, and pytest must pass before any commit. Fail loud.
+
+## Commit messages
+
+Conventional commits, subject ≤72 chars. ≤2 files: subject only. ≥3 files: subject + 2-5 bullets. State what changed, not why. No filler ("enhances clarity", "improves correctness").
 
 ## Conventions
 

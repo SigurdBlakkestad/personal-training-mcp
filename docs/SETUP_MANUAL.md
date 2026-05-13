@@ -48,21 +48,21 @@ git config --global user.email "your-email@example.com"
 
 ## Section 2 — Create the GitHub repo (before Step 1)
 
-Run these commands locally. They create a public repo named `training-pipeline`, push an initial commit, and leave you ready for Step 1 of the build plan.
+Run these commands locally. They create a public repo named `personal-training-mcp`, push an initial commit, and leave you ready for Step 1 of the build plan.
 
 ```bash
 # Pick a parent directory (e.g. ~/code)
 cd ~/code   # or wherever you keep projects
 
 # Create the local project
-mkdir training-pipeline && cd training-pipeline
+mkdir personal-training-mcp && cd personal-training-mcp
 
 # Initialise git on main
 git init -b main
 
 # Minimal README so the first commit isn't empty
 cat > README.md <<'EOF'
-# training-pipeline
+# personal-training-mcp
 
 Personal training data platform. See BUILD_PLAN.md and SETUP_MANUAL.md.
 EOF
@@ -71,7 +71,7 @@ EOF
 # (Drop the files from Claude into this directory before this step)
 
 # Create the public GitHub repo and push
-gh repo create training-pipeline \
+gh repo create personal-training-mcp \
   --public \
   --source=. \
   --remote=origin \
@@ -86,7 +86,7 @@ git push -u origin main
 If you'd rather create the repo manually on github.com first, do that, then:
 
 ```bash
-git remote add origin git@github.com:<YOUR-USERNAME>/training-pipeline.git
+git remote add origin git@github.com:<YOUR-USERNAME>/personal-training-mcp.git
 git add README.md BUILD_PLAN.md SETUP_MANUAL.md
 git commit -m "chore: initial commit"
 git push -u origin main
@@ -100,7 +100,7 @@ git push -u origin main
 
 1. Go to https://supabase.com → Sign in → New project
 2. Organization: your personal (default)
-3. Project name: `training-pipeline`
+3. Project name: `personal-training-mcp`
 4. Database password: generate a strong one, **save it in your password manager** — you'll need it
 5. Region: pick the one closest to you (for you in Norway: `eu-central-1` Frankfurt or `eu-west-1` Ireland)
 6. Plan: Free
@@ -116,7 +116,7 @@ git push -u origin main
 
 ### 3.3 Create local .env
 
-In your `training-pipeline` repo:
+In your `personal-training-mcp` repo:
 
 ```bash
 cp .env.example .env   # this file gets created in Step 1; for now just touch
@@ -134,7 +134,7 @@ LOG_LEVEL=INFO
 
 ### 3.4 Add the connection string as a GitHub Secret
 
-1. https://github.com/<your-username>/training-pipeline → Settings → Secrets and variables → Actions
+1. https://github.com/<your-username>/personal-training-mcp → Settings → Secrets and variables → Actions
 2. **New repository secret** → Name: `DATABASE_URL`, Value: the full connection string with password substituted
 3. Save
 
@@ -150,10 +150,10 @@ In Supabase: **Database** → **Extensions** → search for `pgcrypto` → enabl
 
 1. Go to https://www.strava.com/settings/api (you must be logged into Strava)
 2. **Create & Manage Your App** → fill in:
-   - Application Name: `training-pipeline`
+   - Application Name: `personal-training-mcp`
    - Category: `Training`
    - Club: leave blank
-   - Website: `https://github.com/<your-username>/training-pipeline`
+   - Website: `https://github.com/<your-username>/personal-training-mcp`
    - Application Description: `Personal training data pipeline`
    - Authorization Callback Domain: `localhost` (we'll do OAuth locally one time)
 3. Upload an icon if asked (any small image will do)
@@ -218,7 +218,7 @@ Strava rotates refresh tokens. The ingestor logs a WARNING when it receives a ne
 2. Create your account using your existing Withings email (the one tied to your scale)
 3. **Dashboard** → **Public API** → **Create an app**
 4. Fill in:
-   - Application name: `training-pipeline`
+   - Application name: `personal-training-mcp`
    - Description: `Personal training data sync`
    - Logo: any small image
    - **Callback URL: `http://localhost:8765/callback`** (must match exactly what the helper script uses in Step 6)
@@ -259,7 +259,7 @@ The script will:
 ### 6.1 Create the integration
 
 1. https://www.notion.so/profile/integrations → **+ New integration**
-2. Name: `training-pipeline`
+2. Name: `personal-training-mcp`
 3. Type: **Internal**
 4. Associated workspace: your personal workspace
 5. Capabilities: Read content, Update content, Insert content
@@ -303,7 +303,7 @@ This one is a single page (not a multi-row DB). Create a regular page called "Tr
 ### 6.3 Share each database with the integration
 
 For each of the three (and the dashboard page):
-1. Open the DB/page → top right `...` → **Connections** → **Connect to** → select `training-pipeline`
+1. Open the DB/page → top right `...` → **Connections** → **Connect to** → select `personal-training-mcp`
 
 ### 6.4 Get the database IDs
 
@@ -333,14 +333,14 @@ Add all four as GitHub Secrets.
 ### 7.1 Create account
 
 1. https://render.com → **Get Started** → sign in with GitHub
-2. Authorize Render to access your `training-pipeline` repo
+2. Authorize Render to access your `personal-training-mcp` repo
 
 ### 7.2 Connect the repo (after Step 9 is built)
 
 Step 9 adds `render.yaml` to the repo, which Render auto-detects.
 
 1. Render dashboard → **New +** → **Blueprint**
-2. Select `training-pipeline` repo → Render reads `render.yaml`
+2. Select `personal-training-mcp` repo → Render reads `render.yaml`
 3. Service plan: Free
 4. Add environment variables in the Render dashboard (cannot be in the blueprint for secrets):
    - `DATABASE_URL`
@@ -372,15 +372,15 @@ After first deploy, your URL is `https://<service-name>.onrender.com`. The MCP e
 3. Branch: `main`, folder: `/docs`
 4. Save
 
-The site URL will be `https://<your-username>.github.io/training-pipeline/`.
+The site URL will be `https://<your-username>.github.io/personal-training-mcp/`.
 
-After Step 11 generates `docs/training.ics`, the calendar will be accessible at `https://<your-username>.github.io/training-pipeline/training.ics`.
+After Step 11 generates `docs/training.ics`, the calendar will be accessible at `https://<your-username>.github.io/personal-training-mcp/training.ics`.
 
 ### 8.2 Subscribe on iPhone (after Step 11 publishes the calendar)
 
 1. iPhone: **Settings** → **Calendar** → **Accounts** → **Add Account** → **Other**
 2. **Add Subscribed Calendar**
-3. Server: `https://<your-username>.github.io/training-pipeline/training.ics`
+3. Server: `https://<your-username>.github.io/personal-training-mcp/training.ics`
 4. Tap **Next** → **Save**
 5. Open the **Calendar** app — your training sessions appear under a new calendar
 

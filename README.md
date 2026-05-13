@@ -1,4 +1,4 @@
-# training-pipeline
+# personal-training-mcp
 
 Personal training data platform. Pulls workouts and health data from Strava, Withings, and Garmin into a single Postgres database, computes derived training metrics, and exposes everything to Claude as a coaching assistant. Plans get mirrored to Notion and subscribed to as an iPhone calendar.
 

@@ -23,7 +23,7 @@ Staged build plan with paste-ready Claude Code prompts. Each step is independent
 ## Before Step 1
 
 You must have completed every section of `SETUP_MANUAL.md` up to and including **Supabase**. Specifically:
-- A public GitHub repo named `training-pipeline` pushed to your account
+- A public GitHub repo named `personal-training-mcp` pushed to your account
 - A Supabase project with the `DATABASE_URL` connection string
 - Python 3.12 installed locally
 - Claude Code installed and authenticated
@@ -519,7 +519,7 @@ Build src/training_pipeline/calendar_publish/:
   - DURATION from session.duration_min
   - SUMMARY = session_type
   - DESCRIPTION = full session description + intensity + notes
-- publisher.py: write the .ics to `docs/training.ics`. GitHub Pages serves /docs as site root, so the public URL is https://<username>.github.io/training-pipeline/training.ics. Commit + push only if content changed (hash check).
+- publisher.py: write the .ics to `docs/training.ics`. GitHub Pages serves /docs as site root, so the public URL is https://<username>.github.io/personal-training-mcp/training.ics. Commit + push only if content changed (hash check).
 
 Add .github/workflows/publish_calendar.yml:
 - Triggers: workflow_run on notion_mirror.yml completion (success), workflow_dispatch, and push to main affecting weekly_plans logic
@@ -537,7 +537,7 @@ Manual verification:
 1. Confirm GitHub Pages is enabled for /docs folder in repo settings (done in SETUP_MANUAL.md)
 2. Ask Claude in your Project: "Save this test plan: Monday 18:00 easy bike 45 min, Wednesday 06:00 upper push 60 min." Claude should call save_weekly_plan via MCP.
 3. Trigger publish_calendar.yml manually
-4. Confirm https://<username>.github.io/training-pipeline/training.ics returns the calendar
+4. Confirm https://<username>.github.io/personal-training-mcp/training.ics returns the calendar
 5. On iPhone: Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar → paste the URL → Save
 6. Sessions appear in iOS Calendar
 ```
