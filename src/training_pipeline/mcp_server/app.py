@@ -1,8 +1,9 @@
-"""FastAPI host that mounts the MCP server over SSE.
+"""FastAPI host that mounts the MCP server over streamable HTTP.
 
 Exposes:
 - GET /health  -> {"status": "ok"}
-- /mcp/*       -> FastMCP SSE transport
+- /mcp         -> FastMCP streamable-HTTP transport (single endpoint, what
+                  Claude.ai's custom connectors expect)
 """
 
 from fastapi import FastAPI
@@ -13,7 +14,7 @@ from training_pipeline.shared.logging import configure_logging, get_logger
 configure_logging()
 logger = get_logger(__name__)
 
-mcp_app = mcp.http_app(transport="sse")
+mcp_app = mcp.http_app(transport="http")
 
 app = FastAPI(title="personal-training-mcp", lifespan=mcp_app.lifespan)
 
