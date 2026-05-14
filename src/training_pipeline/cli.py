@@ -21,6 +21,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Recompute TSS, CTL/ATL/TSB, weekly load, and weight trend metrics",
     )
 
+    serve = sub.add_parser(
+        "serve-mcp",
+        help="Run the MCP server (FastAPI + SSE) locally",
+    )
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+
     return parser
 
 
@@ -44,6 +51,18 @@ def main(argv: list[str] | None = None) -> int:
         with get_session() as session:
             counts = recompute_all(session)
         logger.info("cli.compute_derived.complete", **counts.to_dict())
+        return 0
+
+    if args.command == "serve-mcp":
+        import uvicorn
+
+        logger.info("cli.serve_mcp.start", host=args.host, port=args.port)
+        uvicorn.run(
+            "training_pipeline.mcp_server.app:app",
+            host=args.host,
+            port=args.port,
+            log_config=None,
+        )
         return 0
 
     parser.error(f"unknown command: {args.command}")

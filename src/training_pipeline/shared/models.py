@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -172,6 +173,22 @@ class DerivedMetric(Base):
     __table_args__ = (
         UniqueConstraint("date", "metric_name", name="uq_derived_metrics_date_metric"),
     )
+
+
+class AthleteContext(Base):
+    __tablename__ = "athlete_context"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, server_default=text("1"))
+    ftp_watts: Mapped[int | None] = mapped_column(Integer)
+    max_hr: Mapped[int | None] = mapped_column(SmallInteger)
+    body_weight_kg: Mapped[float | None] = mapped_column(REAL)
+    current_phase: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (CheckConstraint("id = 1", name="ck_athlete_context_singleton"),)
 
 
 class IngestionRun(Base):
