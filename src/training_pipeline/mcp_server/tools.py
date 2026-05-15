@@ -49,10 +49,18 @@ def _serialize_activity(activity: Activity, log: ManualLog | None) -> dict[str, 
         if activity.duration_seconds is not None
         else None
     )
+    moving_time_min = (
+        round(activity.moving_time_seconds / 60.0, 2)
+        if activity.moving_time_seconds is not None
+        else None
+    )
     distance_km = (
         round(activity.distance_meters / 1000.0, 3)
         if activity.distance_meters is not None
         else None
+    )
+    avg_speed_kmh = (
+        round(activity.average_speed_ms * 3.6, 2) if activity.average_speed_ms is not None else None
     )
     return {
         "id": str(activity.id),
@@ -61,14 +69,31 @@ def _serialize_activity(activity: Activity, log: ManualLog | None) -> dict[str, 
         "start_time": activity.start_time.isoformat(),
         "sport_type": activity.sport_type,
         "name": activity.name,
+        "description": activity.description,
         "duration_min": duration_min,
+        "moving_time_min": moving_time_min,
         "distance_km": distance_km,
+        "avg_speed_kmh": avg_speed_kmh,
+        "is_trainer": activity.is_trainer,
+        "workout_type": activity.workout_type,
         "avg_hr": activity.avg_hr,
         "max_hr": activity.max_hr,
+        "min_hr": activity.min_hr,
         "avg_power": activity.avg_power,
+        "max_power": activity.max_power,
         "normalized_power": activity.normalized_power,
+        "kilojoules": activity.kilojoules,
         "calories": activity.calories,
+        "suffer_score": activity.suffer_score,
         "training_load": activity.training_load,
+        "aerobic_training_effect": activity.aerobic_training_effect,
+        "anaerobic_training_effect": activity.anaerobic_training_effect,
+        "training_effect_label": activity.training_effect_label,
+        "vo2_max": activity.vo2_max,
+        "moderate_intensity_minutes": activity.moderate_intensity_minutes,
+        "vigorous_intensity_minutes": activity.vigorous_intensity_minutes,
+        "avg_stride_length_cm": activity.avg_stride_length_cm,
+        "avg_ground_contact_time_ms": activity.avg_ground_contact_time_ms,
         "rpe": log.rpe if log is not None else None,
         "pain": log.pain_score if log is not None else None,
         "notes": log.notes if log is not None else None,
@@ -165,23 +190,33 @@ def _get_daily_summary(
 
     by_date: dict[date_type, dict[str, Any]] = {}
 
+    def _empty(day: date_type) -> dict[str, Any]:
+        return {
+            "date": day.isoformat(),
+            "sources": [],
+            "sleep_score": None,
+            "sleep_duration_hours": None,
+            "resting_hr": None,
+            "hrv_ms": None,
+            "stress_avg": None,
+            "stress_max": None,
+            "body_battery_high": None,
+            "body_battery_low": None,
+            "steps": None,
+            "active_calories": None,
+            "training_readiness_score": None,
+            "training_readiness_level": None,
+            "vo2_max_running": None,
+            "vo2_max_cycling": None,
+            "intensity_minutes_moderate": None,
+            "intensity_minutes_vigorous": None,
+            "respiration_avg": None,
+            "weight_kg": None,
+            "body_fat_pct": None,
+        }
+
     for summary in summaries:
-        row = by_date.setdefault(
-            summary.date,
-            {
-                "date": summary.date.isoformat(),
-                "sources": [],
-                "sleep_score": None,
-                "sleep_duration_hours": None,
-                "resting_hr": None,
-                "hrv_ms": None,
-                "body_battery_high": None,
-                "body_battery_low": None,
-                "steps": None,
-                "weight_kg": None,
-                "body_fat_pct": None,
-            },
-        )
+        row = by_date.setdefault(summary.date, _empty(summary.date))
         row["sources"].append(summary.source)
         if summary.sleep_score is not None:
             row["sleep_score"] = summary.sleep_score
@@ -191,31 +226,36 @@ def _get_daily_summary(
             row["resting_hr"] = summary.resting_hr
         if summary.hrv_ms is not None:
             row["hrv_ms"] = summary.hrv_ms
+        if summary.stress_avg is not None:
+            row["stress_avg"] = summary.stress_avg
+        if summary.stress_max is not None:
+            row["stress_max"] = summary.stress_max
         if summary.body_battery_high is not None:
             row["body_battery_high"] = summary.body_battery_high
         if summary.body_battery_low is not None:
             row["body_battery_low"] = summary.body_battery_low
         if summary.steps is not None:
             row["steps"] = summary.steps
+        if summary.active_calories is not None:
+            row["active_calories"] = summary.active_calories
+        if summary.training_readiness_score is not None:
+            row["training_readiness_score"] = summary.training_readiness_score
+        if summary.training_readiness_level is not None:
+            row["training_readiness_level"] = summary.training_readiness_level
+        if summary.vo2_max_running is not None:
+            row["vo2_max_running"] = summary.vo2_max_running
+        if summary.vo2_max_cycling is not None:
+            row["vo2_max_cycling"] = summary.vo2_max_cycling
+        if summary.intensity_minutes_moderate is not None:
+            row["intensity_minutes_moderate"] = summary.intensity_minutes_moderate
+        if summary.intensity_minutes_vigorous is not None:
+            row["intensity_minutes_vigorous"] = summary.intensity_minutes_vigorous
+        if summary.respiration_avg is not None:
+            row["respiration_avg"] = summary.respiration_avg
 
     for measurement in measurements:
         day = measurement.measured_at.date()
-        row = by_date.setdefault(
-            day,
-            {
-                "date": day.isoformat(),
-                "sources": [],
-                "sleep_score": None,
-                "sleep_duration_hours": None,
-                "resting_hr": None,
-                "hrv_ms": None,
-                "body_battery_high": None,
-                "body_battery_low": None,
-                "steps": None,
-                "weight_kg": None,
-                "body_fat_pct": None,
-            },
-        )
+        row = by_date.setdefault(day, _empty(day))
         if measurement.weight_kg is not None:
             row["weight_kg"] = measurement.weight_kg
         if measurement.body_fat_pct is not None:
@@ -501,6 +541,14 @@ def _readiness_today(session: Session) -> dict[str, Any]:
     rpe_values = [int(r[0]) for r in recent_rpe if r[0] is not None]
     rpe_avg = round(sum(rpe_values) / len(rpe_values), 2) if rpe_values else None
 
+    latest_garmin_summary = session.scalar(
+        select(DailySummary)
+        .where(DailySummary.source == "garmin")
+        .where(DailySummary.date <= today)
+        .order_by(desc(DailySummary.date))
+        .limit(1)
+    )
+
     payload = {
         "as_of": today.isoformat(),
         "last_night": {
@@ -513,8 +561,46 @@ def _readiness_today(session: Session) -> dict[str, Any]:
             ),
             "resting_hr": latest_summary.resting_hr if latest_summary is not None else None,
             "hrv_ms": latest_summary.hrv_ms if latest_summary is not None else None,
+            "respiration_avg": (
+                latest_summary.respiration_avg if latest_summary is not None else None
+            ),
             "body_battery_low": (
                 latest_summary.body_battery_low if latest_summary is not None else None
+            ),
+        },
+        "garmin_readiness": {
+            "date": (
+                latest_garmin_summary.date.isoformat()
+                if latest_garmin_summary is not None
+                else None
+            ),
+            "score": (
+                latest_garmin_summary.training_readiness_score
+                if latest_garmin_summary is not None
+                else None
+            ),
+            "level": (
+                latest_garmin_summary.training_readiness_level
+                if latest_garmin_summary is not None
+                else None
+            ),
+        },
+        "fitness": {
+            "vo2_max_running": (
+                latest_garmin_summary.vo2_max_running if latest_garmin_summary is not None else None
+            ),
+            "vo2_max_cycling": (
+                latest_garmin_summary.vo2_max_cycling if latest_garmin_summary is not None else None
+            ),
+            "intensity_minutes_moderate": (
+                latest_garmin_summary.intensity_minutes_moderate
+                if latest_garmin_summary is not None
+                else None
+            ),
+            "intensity_minutes_vigorous": (
+                latest_garmin_summary.intensity_minutes_vigorous
+                if latest_garmin_summary is not None
+                else None
             ),
         },
         "latest_weight": {

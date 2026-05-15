@@ -12,7 +12,7 @@ from training_pipeline.ingestors.base import IngestionResult, IngestorBase
 from training_pipeline.ingestors.http import HttpClient
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.logging import get_logger
-from training_pipeline.shared.models import IngestionRun
+from training_pipeline.shared.models import Activity, IngestionRun
 
 logger = get_logger(__name__)
 
@@ -21,6 +21,9 @@ STRAVA_DEFAULT_LOOKBACK_DAYS = 365
 STRAVA_PAGE_SIZE = 200
 STRAVA_RATE_WINDOW_SECONDS = 900
 STRAVA_RATE_LIMIT_THRESHOLD = 0.9
+# Same window used by the Garmin ingestor when folding into Strava. If the two
+# clocks drift more than this, the dedup misses and you'd get one row per side.
+GARMIN_DEDUPE_WINDOW_SECONDS = 60
 
 SPORT_TYPE_MAP: dict[str, str] = {
     "Ride": "cycling",
@@ -50,7 +53,25 @@ def _normalize_sport(strava_sport_type: str | None) -> str:
 def _coerce_int(value: Any) -> int | None:
     if value is None:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
 
 
 class StravaIngestor(IngestorBase):
@@ -114,6 +135,10 @@ class StravaIngestor(IngestorBase):
                 break
             for activity in activities:
                 mapped = self._map_activity(activity)
+                if self._consume_garmin_row_if_exists(session, mapped, log):
+                    result.records_processed += 1
+                    result.records_updated += 1
+                    continue
                 outcome = self.upsert_activity(session, mapped)
                 result.records_processed += 1
                 if outcome == "inserted":
@@ -180,6 +205,61 @@ class StravaIngestor(IngestorBase):
         new_refresh: str = payload.get("refresh_token", refresh_token)
         return access_token, new_refresh
 
+    def _consume_garmin_row_if_exists(
+        self,
+        session: Session,
+        mapped: dict[str, Any],
+        log: Any,
+    ) -> bool:
+        """Repurpose an existing Garmin row at the same start_time, if any.
+
+        Symmetric to ``GarminIngestor._merge_into_strava_if_exists`` — when the
+        Garmin sync runs first (backfill or just earlier in the morning), the
+        activity is sitting in Postgres as ``source='garmin'``. When the Strava
+        sync arrives, we don't want to insert a second row; we want the Strava
+        record to *become* the canonical row while preserving Garmin's
+        exclusives (training effect, VO2, running dynamics) and stashing
+        Garmin's raw payload as ``raw.garmin_supplement``.
+
+        Mutating in place (rather than insert-and-delete) keeps any manual_logs
+        foreign keys intact.
+
+        Returns True if a Garmin row was consumed; the caller should skip the
+        regular upsert. Returns False if no match was found or if there's
+        already a Strava row for this source_id (in which case the regular
+        upsert path handles it).
+        """
+        start_time = mapped["start_time"]
+        window = timedelta(seconds=GARMIN_DEDUPE_WINDOW_SECONDS)
+        garmin = session.scalar(
+            select(Activity).where(
+                Activity.source == "garmin",
+                Activity.start_time >= start_time - window,
+                Activity.start_time <= start_time + window,
+            )
+        )
+        if garmin is None:
+            return False
+        conflict = session.scalar(
+            select(Activity.id).where(
+                Activity.source == "strava",
+                Activity.source_id == mapped["source_id"],
+            )
+        )
+        if conflict is not None:
+            return False
+        old_garmin_raw = dict(garmin.raw or {})
+        for key, value in mapped.items():
+            setattr(garmin, key, value)
+        garmin.garmin_supplement = old_garmin_raw
+        garmin.updated_at = datetime.now(UTC)
+        log.info(
+            "strava.activity.consumed_garmin",
+            strava_source_id=mapped["source_id"],
+            garmin_row_id=str(garmin.id),
+        )
+        return True
+
     def _map_activity(self, activity: dict[str, Any]) -> dict[str, Any]:
         start_time = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
         elapsed = activity.get("elapsed_time")
@@ -192,14 +272,22 @@ class StravaIngestor(IngestorBase):
             "sport_type": _normalize_sport(activity.get("sport_type")),
             "name": activity.get("name"),
             "duration_seconds": elapsed,
+            "moving_time_seconds": _coerce_int(activity.get("moving_time")),
             "distance_meters": activity.get("distance"),
             "elevation_gain_meters": activity.get("total_elevation_gain"),
             "avg_hr": _coerce_int(activity.get("average_heartrate")),
             "max_hr": _coerce_int(activity.get("max_heartrate")),
             "avg_power": _coerce_int(activity.get("average_watts")),
+            "max_power": _coerce_int(activity.get("max_watts")),
             "normalized_power": _coerce_int(activity.get("weighted_average_watts")),
             "calories": _coerce_int(activity.get("calories")),
             "avg_cadence": _coerce_int(activity.get("average_cadence")),
+            "suffer_score": _coerce_int(activity.get("suffer_score")),
+            "kilojoules": _coerce_float(activity.get("kilojoules")),
+            "average_speed_ms": _coerce_float(activity.get("average_speed")),
+            "is_trainer": _coerce_bool(activity.get("trainer")),
+            "workout_type": _coerce_int(activity.get("workout_type")),
+            "description": activity.get("description") or None,
             "raw": activity,
         }
 

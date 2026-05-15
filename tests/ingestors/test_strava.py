@@ -48,14 +48,22 @@ def _activity(
         "sport_type": sport,
         "start_date": start,
         "elapsed_time": 3600,
+        "moving_time": 3480,
         "distance": 30000.0,
         "total_elevation_gain": 250.0,
         "average_heartrate": 142.0,
         "max_heartrate": 175.0,
         "average_watts": 210.0,
         "weighted_average_watts": 225.0,
+        "max_watts": 612,
         "average_cadence": 88.0,
         "calories": 600.0,
+        "suffer_score": 87,
+        "kilojoules": 750.4,
+        "average_speed": 8.62,
+        "trainer": False,
+        "workout_type": 12,
+        "description": "Z2 endurance",
     }
 
 
@@ -330,4 +338,91 @@ def test_activity_mapping_handles_missing_optional_fields() -> None:
     assert mapped["avg_power"] is None
     assert mapped["normalized_power"] is None
     assert mapped["calories"] is None
+    assert mapped["moving_time_seconds"] is None
+    assert mapped["suffer_score"] is None
+    assert mapped["kilojoules"] is None
+    assert mapped["average_speed_ms"] is None
+    assert mapped["is_trainer"] is None
+    assert mapped["workout_type"] is None
+    assert mapped["description"] is None
+    assert mapped["max_power"] is None
     assert mapped["raw"] is minimal
+
+
+def test_activity_mapping_extracts_rich_strava_fields() -> None:
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    mapped = ingestor._map_activity(_activity(42))
+    assert mapped["moving_time_seconds"] == 3480
+    assert mapped["suffer_score"] == 87
+    assert mapped["kilojoules"] == 750.4
+    assert mapped["average_speed_ms"] == 8.62
+    assert mapped["is_trainer"] is False
+    assert mapped["workout_type"] == 12
+    assert mapped["description"] == "Z2 endurance"
+    assert mapped["max_power"] == 612
+
+
+def test_consume_garmin_row_repurposes_existing_row() -> None:
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    start_time = datetime(2026, 4, 1, 10, 0, 30, tzinfo=UTC)
+    mapped = {
+        "source": "strava",
+        "source_id": "s99",
+        "start_time": start_time,
+        "sport_type": "cycling",
+        "name": "Morning ride",
+        "avg_hr": 145,
+        "raw": {"id": 99, "elapsed_time": 3600},
+    }
+    garmin_row = MagicMock()
+    garmin_row.raw = {"activityId": 42, "trainingEffectLabel": "TEMPO"}
+    garmin_row.aerobic_training_effect = 3.4
+    garmin_row.min_hr = 92
+
+    session = MagicMock(spec=Session)
+    # First scalar() call returns the garmin row, second returns None (no conflicting strava row)
+    session.scalar.side_effect = [garmin_row, None]
+
+    consumed = ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock())
+    assert consumed is True
+    assert garmin_row.source == "strava"
+    assert garmin_row.source_id == "s99"
+    assert garmin_row.name == "Morning ride"
+    assert garmin_row.avg_hr == 145
+    # Garmin-only columns survive — Strava's mapped dict doesn't include them
+    assert garmin_row.aerobic_training_effect == 3.4
+    assert garmin_row.min_hr == 92
+    # Raw is now Strava's payload; the prior Garmin raw lives on garmin_supplement
+    assert garmin_row.raw == {"id": 99, "elapsed_time": 3600}
+    assert garmin_row.garmin_supplement == {
+        "activityId": 42,
+        "trainingEffectLabel": "TEMPO",
+    }
+
+
+def test_consume_garmin_row_skipped_when_no_match() -> None:
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    mapped = {
+        "source": "strava",
+        "source_id": "s99",
+        "start_time": datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        "raw": {"id": 99},
+    }
+    session = MagicMock(spec=Session)
+    session.scalar.return_value = None
+    assert ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock()) is False
+
+
+def test_consume_garmin_row_skipped_when_strava_already_exists() -> None:
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    mapped = {
+        "source": "strava",
+        "source_id": "s99",
+        "start_time": datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        "raw": {"id": 99},
+    }
+    garmin_row = MagicMock()
+    session = MagicMock(spec=Session)
+    # garmin row found, then strava row found — conflict
+    session.scalar.side_effect = [garmin_row, "existing-strava-uuid"]
+    assert ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock()) is False

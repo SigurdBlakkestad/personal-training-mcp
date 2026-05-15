@@ -24,6 +24,22 @@ GARMIN_DEFAULT_LOOKBACK_DAYS = 30
 GARMIN_PAGE_SIZE = 20
 STRAVA_DEDUPE_WINDOW_SECONDS = 60
 
+# Columns Garmin alone provides — when a Garmin activity merges into an
+# existing Strava row, copy these onto the Strava row so the rich data is not
+# trapped inside ``raw.garmin_supplement``. avg_hr/max_hr/calories etc. are
+# excluded because Strava already populates them.
+GARMIN_ONLY_ACTIVITY_FIELDS: tuple[str, ...] = (
+    "aerobic_training_effect",
+    "anaerobic_training_effect",
+    "training_effect_label",
+    "vo2_max",
+    "moderate_intensity_minutes",
+    "vigorous_intensity_minutes",
+    "min_hr",
+    "avg_stride_length_cm",
+    "avg_ground_contact_time_ms",
+)
+
 SPORT_TYPE_MAP: dict[str, str] = {
     "cycling": "cycling",
     "road_biking": "cycling",
@@ -65,7 +81,27 @@ def _normalize_sport(type_key: str | None) -> str:
 def _coerce_int(value: Any) -> int | None:
     if value is None:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    return str(value)
 
 
 def _parse_garmin_time(value: str | None) -> datetime | None:
@@ -129,6 +165,80 @@ def _extract_hrv_ms(hrv: Any) -> float | None:
     return float(value)
 
 
+def _extract_readiness(readiness: Any) -> tuple[int | None, str | None]:
+    """Garmin returns readiness as either a dict or a list of dicts.
+
+    The morning snapshot (``inputContext == "AFTER_WAKEUP_RESET"``) is preferred
+    when present; otherwise we fall back to the first entry.
+    """
+    entry: dict[str, Any] | None = None
+    if isinstance(readiness, dict):
+        entry = readiness
+    elif isinstance(readiness, list) and readiness:
+        morning = next(
+            (
+                e
+                for e in readiness
+                if isinstance(e, dict) and e.get("inputContext") == "AFTER_WAKEUP_RESET"
+            ),
+            None,
+        )
+        first = readiness[0] if isinstance(readiness[0], dict) else None
+        entry = morning or first
+    if entry is None:
+        return None, None
+    return _coerce_int(entry.get("score")), _coerce_str(entry.get("level"))
+
+
+def _extract_vo2_max(max_metrics: Any) -> tuple[float | None, float | None]:
+    """Returns (running, cycling) VO2 max from get_max_metrics().
+
+    The endpoint returns a list with one dict that has ``generic`` (running) and
+    ``cycling`` sub-objects, each holding ``vo2MaxPreciseValue``.
+    """
+    entry: dict[str, Any] | None = None
+    if isinstance(max_metrics, list) and max_metrics:
+        first = max_metrics[0]
+        if isinstance(first, dict):
+            entry = first
+    elif isinstance(max_metrics, dict):
+        entry = max_metrics
+    if entry is None:
+        return None, None
+    running = _vo2_from_block(entry.get("generic"))
+    cycling = _vo2_from_block(entry.get("cycling"))
+    return running, cycling
+
+
+def _vo2_from_block(block: Any) -> float | None:
+    if not isinstance(block, dict):
+        return None
+    for key in ("vo2MaxPreciseValue", "vo2MaxValue"):
+        value = _coerce_float(block.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_intensity_minutes(intensity: Any) -> tuple[int | None, int | None]:
+    if not isinstance(intensity, dict):
+        return None, None
+    return (
+        _coerce_int(intensity.get("moderateMinutes")),
+        _coerce_int(intensity.get("vigorousMinutes")),
+    )
+
+
+def _extract_respiration_avg(respiration: Any) -> float | None:
+    if not isinstance(respiration, dict):
+        return None
+    for key in ("avgWakingRespirationValue", "avgSleepRespirationValue"):
+        value = _coerce_float(respiration.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 class GarminIngestor(IngestorBase):
     def __init__(
         self,
@@ -136,10 +246,12 @@ class GarminIngestor(IngestorBase):
         client: Any = None,
         client_factory: Callable[[str], Any] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        backfill: bool = False,
     ) -> None:
         self._client = client
         self._client_factory = client_factory
         self._now = now
+        self._backfill = backfill
 
     @property
     def name(self) -> str:
@@ -218,7 +330,7 @@ class GarminIngestor(IngestorBase):
                     stop = True
                     break
                 source_id = str(activity["activityId"])
-                if self._activity_exists(session, source_id):
+                if not self._backfill and self._activity_exists(session, source_id):
                     stop = True
                     break
                 mapped = self._map_activity(activity, start_time)
@@ -262,9 +374,11 @@ class GarminIngestor(IngestorBase):
         )
         if strava is None:
             return False
-        merged_raw = dict(strava.raw or {})
-        merged_raw["garmin_supplement"] = garmin_mapped["raw"]
-        strava.raw = merged_raw
+        strava.garmin_supplement = garmin_mapped["raw"]
+        for field in GARMIN_ONLY_ACTIVITY_FIELDS:
+            value = garmin_mapped.get(field)
+            if value is not None and getattr(strava, field, None) is None:
+                setattr(strava, field, value)
         log.info(
             "garmin.activity.merged_into_strava",
             strava_source_id=strava.source_id,
@@ -293,6 +407,16 @@ class GarminIngestor(IngestorBase):
             "normalized_power": _coerce_int(activity.get("normPower")),
             "calories": _coerce_int(activity.get("calories")),
             "avg_cadence": _extract_cadence(activity),
+            "aerobic_training_effect": _coerce_float(activity.get("aerobicTrainingEffect")),
+            "anaerobic_training_effect": _coerce_float(activity.get("anaerobicTrainingEffect")),
+            "training_effect_label": _coerce_str(activity.get("trainingEffectLabel")),
+            "vo2_max": _coerce_float(activity.get("vO2MaxValue")),
+            "moderate_intensity_minutes": _coerce_int(activity.get("moderateIntensityMinutes")),
+            "vigorous_intensity_minutes": _coerce_int(activity.get("vigorousIntensityMinutes")),
+            "min_hr": _coerce_int(activity.get("minHR")),
+            "max_power": _coerce_int(activity.get("maxPower") or activity.get("maxAvgPower")),
+            "avg_stride_length_cm": _coerce_float(activity.get("avgStrideLength")),
+            "avg_ground_contact_time_ms": _coerce_int(activity.get("avgGroundContactTime")),
             "raw": activity,
         }
 
@@ -305,8 +429,11 @@ class GarminIngestor(IngestorBase):
         log: BoundLogger,
     ) -> None:
         today = self._now().date()
-        earliest = today - timedelta(days=GARMIN_DEFAULT_LOOKBACK_DAYS)
-        cursor = max(since.date(), earliest)
+        if self._backfill:
+            cursor = since.date()
+        else:
+            earliest = today - timedelta(days=GARMIN_DEFAULT_LOOKBACK_DAYS)
+            cursor = max(since.date(), earliest)
         while cursor <= today:
             iso = cursor.isoformat()
             user_summary = self._safe_call(client.get_user_summary, iso, log, "user_summary")
@@ -315,10 +442,21 @@ class GarminIngestor(IngestorBase):
             readiness = self._safe_call(
                 client.get_training_readiness, iso, log, "training_readiness"
             )
-            if all(v is None for v in (user_summary, sleep, hrv, readiness)):
+            max_metrics = self._safe_call(client.get_max_metrics, iso, log, "max_metrics")
+            intensity = self._safe_call(
+                client.get_intensity_minutes_data, iso, log, "intensity_minutes"
+            )
+            respiration = self._safe_call(client.get_respiration_data, iso, log, "respiration")
+            if all(
+                v is None
+                for v in (user_summary, sleep, hrv, readiness, max_metrics, intensity, respiration)
+            ):
                 cursor += timedelta(days=1)
                 continue
             us = user_summary if isinstance(user_summary, dict) else {}
+            readiness_score, readiness_level = _extract_readiness(readiness)
+            vo2_running, vo2_cycling = _extract_vo2_max(max_metrics)
+            im_moderate, im_vigorous = _extract_intensity_minutes(intensity)
             summary = {
                 "date": cursor,
                 "source": "garmin",
@@ -327,14 +465,26 @@ class GarminIngestor(IngestorBase):
                 "resting_hr": _coerce_int(us.get("restingHeartRate")),
                 "hrv_ms": _extract_hrv_ms(hrv),
                 "stress_avg": _coerce_int(us.get("averageStressLevel")),
+                "stress_max": _coerce_int(us.get("maxStressLevel")),
                 "body_battery_high": _coerce_int(us.get("bodyBatteryHighestValue")),
                 "body_battery_low": _coerce_int(us.get("bodyBatteryLowestValue")),
                 "steps": _coerce_int(us.get("totalSteps")),
+                "active_calories": _coerce_int(us.get("activeKilocalories")),
+                "training_readiness_score": readiness_score,
+                "training_readiness_level": readiness_level,
+                "vo2_max_running": vo2_running,
+                "vo2_max_cycling": vo2_cycling,
+                "intensity_minutes_moderate": im_moderate,
+                "intensity_minutes_vigorous": im_vigorous,
+                "respiration_avg": _extract_respiration_avg(respiration),
                 "raw": {
                     "user_summary": user_summary,
                     "sleep": sleep,
                     "hrv": hrv,
                     "training_readiness": readiness,
+                    "max_metrics": max_metrics,
+                    "intensity_minutes": intensity,
+                    "respiration": respiration,
                 },
             }
             outcome = self.upsert_daily_summary(session, summary)

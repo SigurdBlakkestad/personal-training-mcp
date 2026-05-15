@@ -15,7 +15,20 @@ mcp: FastMCP[Any] = FastMCP("personal-training")
 
 @mcp.tool
 def get_recent_activities(days: int = 14, sport_type: str | None = None) -> list[dict[str, Any]]:
-    """Return recent activities with linked RPE/pain from the latest manual log."""
+    """Return recent activities with linked RPE/pain from the latest manual log.
+
+    Each row includes Strava and Garmin-derived coaching metrics when available:
+    Strava — ``moving_time_min`` (preferred over ``duration_min`` for load
+    analysis since it excludes stops), ``suffer_score`` (Strava's relative
+    effort), ``kilojoules`` (total work, cycling), ``avg_speed_kmh``,
+    ``is_trainer`` (indoor flag), ``workout_type`` (race/workout/default
+    code), ``description``, ``max_power`` (peak watts).
+    Garmin — ``training_load`` (our TSS proxy), ``aerobic_training_effect``
+    and ``anaerobic_training_effect`` (0–5), ``training_effect_label``
+    (AEROBIC_BASE/TEMPO/THRESHOLD/VO2MAX/etc.), ``vo2_max``,
+    ``moderate_intensity_minutes`` / ``vigorous_intensity_minutes``,
+    running dynamics (``avg_stride_length_cm``, ``avg_ground_contact_time_ms``).
+    """
     return tools.get_recent_activities(days=days, sport_type=sport_type)
 
 
@@ -30,6 +43,13 @@ def get_daily_summary(start_date: str, end_date: str) -> list[dict[str, Any]]:
     """Return per-day metrics merged from body_measurements and daily_summary.
 
     Dates are ISO-8601 (YYYY-MM-DD) and inclusive on both ends.
+
+    Each row exposes: sleep_score, sleep_duration_hours, resting_hr, hrv_ms,
+    stress_avg, stress_max, body_battery_high/low, steps, active_calories,
+    training_readiness_score (0–100) and training_readiness_level
+    (READY/MODERATE/LOW/CAUTION), vo2_max_running, vo2_max_cycling,
+    intensity_minutes_moderate, intensity_minutes_vigorous, respiration_avg,
+    weight_kg, body_fat_pct.
     """
     return tools.get_daily_summary(start_date, end_date)
 
@@ -70,7 +90,14 @@ def search_sessions(filters: dict[str, Any]) -> list[dict[str, Any]]:
 
 @mcp.tool
 def readiness_today() -> dict[str, Any]:
-    """Composite of last-night sleep/HRV/RHR, weight delta, current TSB, RPE trend."""
+    """Composite snapshot for today's training decision.
+
+    Returns last-night sleep/HRV/RHR/respiration, Garmin's own training
+    readiness score and level, current VO2 max (running + cycling), week-to-
+    date intensity minutes, weight delta vs 7d avg, current TSB, and recent
+    RPE trend. Prefer ``garmin_readiness.score`` when present; fall back to
+    HRV/RHR/sleep heuristics otherwise.
+    """
     return tools.readiness_today()
 
 

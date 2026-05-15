@@ -1,5 +1,7 @@
 import argparse
 import sys
+from datetime import UTC, datetime
+from datetime import date as date_type
 
 from training_pipeline.calendar_publish.publisher import publish as publish_calendar
 from training_pipeline.derived.compute import recompute_all
@@ -13,12 +15,28 @@ from training_pipeline.shared.logging import configure_logging, get_logger
 logger = get_logger(__name__)
 
 
+def _parse_since(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.combine(date_type.fromisoformat(value), datetime.min.time(), tzinfo=UTC)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="training_pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sync = sub.add_parser("sync", help="Run an ingestor for a single source")
     sync.add_argument("--source", required=True, choices=["strava", "garmin", "withings"])
+    sync.add_argument(
+        "--since",
+        default=None,
+        help=(
+            "ISO date (YYYY-MM-DD) to backfill from. Overrides the default 30-day "
+            "lookback. For Garmin, this also keeps activity pagination going past "
+            "rows already in Postgres so historical activities get re-mapped with "
+            "the latest column extractions."
+        ),
+    )
 
     sub.add_parser(
         "compute-derived",
@@ -50,33 +68,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     configure_logging()
 
-    if args.command == "sync" and args.source == "strava":
-        result = StravaIngestor().run()
+    if args.command == "sync":
+        since = _parse_since(args.since)
+        backfill = since is not None
+        if args.source == "strava":
+            result = StravaIngestor().run(since=since)
+        elif args.source == "garmin":
+            result = GarminIngestor(backfill=backfill).run(since=since)
+        else:
+            result = WithingsIngestor().run(since=since)
         logger.info(
             "cli.sync.complete",
-            source="strava",
-            records_processed=result.records_processed,
-            records_inserted=result.records_inserted,
-            records_updated=result.records_updated,
-        )
-        return 0
-
-    if args.command == "sync" and args.source == "garmin":
-        result = GarminIngestor().run()
-        logger.info(
-            "cli.sync.complete",
-            source="garmin",
-            records_processed=result.records_processed,
-            records_inserted=result.records_inserted,
-            records_updated=result.records_updated,
-        )
-        return 0
-
-    if args.command == "sync" and args.source == "withings":
-        result = WithingsIngestor().run()
-        logger.info(
-            "cli.sync.complete",
-            source="withings",
+            source=args.source,
+            backfill=backfill,
+            since=since.isoformat() if since else None,
             records_processed=result.records_processed,
             records_inserted=result.records_inserted,
             records_updated=result.records_updated,
