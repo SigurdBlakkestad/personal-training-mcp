@@ -40,7 +40,7 @@ Search anchors for navigation. Each path is populated by the build step that int
 
 ## Existing systems
 
-- Garmin: fragile dependency, isolated via `continue-on-error: true` in `sync_garmin.yml`. Recovery = re-run `scripts/garmin_auth.py` locally, update `GARMINTOKENS_B64` secret.
+- Garmin: fragile dependency, isolated via `continue-on-error: true` in `sync_garmin.yml`. Recovery = re-run `scripts/garmin_auth.py` locally, update `GARMINTOKENS_B64` secret. `mobile+*` strategies are usually 429-rate-limited (account-scoped, hours-long window); login still succeeds via `widget+cffi`, which only persists tokens when `client.login(tokenstore=...)` gets a path.
 
 ## Build plan execution rule
 
