@@ -1,0 +1,32 @@
+name: Notion Mirror
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Mirror to Notion
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ACTIVITIES_ID: ${{ secrets.NOTION_DB_ACTIVITIES_ID }}
+          NOTION_DB_PLAN_ID: ${{ secrets.NOTION_DB_PLAN_ID }}
+          NOTION_DB_METRICS_ID: ${{ secrets.NOTION_DB_METRICS_ID }}
+          LOG_LEVEL: INFO
+        run: python -m training_pipeline.cli notion-mirror

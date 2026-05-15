@@ -3,6 +3,7 @@ import sys
 
 from training_pipeline.derived.compute import recompute_all
 from training_pipeline.ingestors.strava import StravaIngestor
+from training_pipeline.notion_sync.runner import run_notion_mirror
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import configure_logging, get_logger
 
@@ -19,6 +20,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "compute-derived",
         help="Recompute TSS, CTL/ATL/TSB, weekly load, and weight trend metrics",
+    )
+
+    sub.add_parser(
+        "notion-mirror",
+        help="Mirror activities, current plan, and dashboard metrics into Notion",
     )
 
     serve = sub.add_parser(
@@ -51,6 +57,11 @@ def main(argv: list[str] | None = None) -> int:
         with get_session() as session:
             counts = recompute_all(session)
         logger.info("cli.compute_derived.complete", **counts.to_dict())
+        return 0
+
+    if args.command == "notion-mirror":
+        mirror_result = run_notion_mirror()
+        logger.info("cli.notion_mirror.complete", **mirror_result.to_dict())
         return 0
 
     if args.command == "serve-mcp":

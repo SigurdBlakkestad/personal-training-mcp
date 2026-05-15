@@ -18,6 +18,11 @@ class Settings(BaseSettings):
 
     ATHLETE_FTP: int = 200
 
+    NOTION_TOKEN: str = ""
+    NOTION_DB_ACTIVITIES_ID: str = ""
+    NOTION_DB_PLAN_ID: str = ""
+    NOTION_DB_METRICS_ID: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]

@@ -50,6 +50,7 @@ class Activity(Base):
     avg_cadence: Mapped[int | None] = mapped_column(SmallInteger)
     training_load: Mapped[float | None] = mapped_column(REAL)
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    notion_page_id: Mapped[str | None] = mapped_column(Text)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
