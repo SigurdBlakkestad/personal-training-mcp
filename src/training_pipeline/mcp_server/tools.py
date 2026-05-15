@@ -707,3 +707,9 @@ def _update_athlete_context(session: Session, updates: dict[str, Any]) -> dict[s
 def update_athlete_context(updates: dict[str, Any]) -> dict[str, Any]:
     with get_session() as session:
         return _update_athlete_context(session, updates)
+
+
+def get_weather_forecast(days: int = 7) -> dict[str, Any]:
+    from training_pipeline.mcp_server.weather import fetch_forecast
+
+    return fetch_forecast(days=days)

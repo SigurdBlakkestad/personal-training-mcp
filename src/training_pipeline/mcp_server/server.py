@@ -128,4 +128,25 @@ def update_athlete_context(updates: dict[str, Any]) -> dict[str, Any]:
     return tools.update_athlete_context(updates)
 
 
+@mcp.tool
+def get_weather_forecast(days: int = 7) -> dict[str, Any]:
+    """Return a daily weather forecast for the athlete's training location.
+
+    Use this when planning the week to choose between indoor (trainer) and
+    outdoor cycling. Heavy rain, thunderstorms, or strong wind are good
+    reasons to prefer indoor; mild conditions favor outdoor.
+
+    Args:
+      days: forecast horizon in days, 1-16. Default 7.
+
+    Returns:
+      {"latitude": float, "longitude": float, "timezone": str,
+       "daily": [{"date": "YYYY-MM-DD",
+                  "temperature_max_c", "temperature_min_c",
+                  "precipitation_sum_mm", "precipitation_probability_max_pct",
+                  "wind_speed_max_kmh", "weather_code", "condition"}, ...]}
+    """
+    return tools.get_weather_forecast(days=days)
+
+
 __all__ = ["mcp"]

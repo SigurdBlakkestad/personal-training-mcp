@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     NOTION_DB_PLAN_ID: str = ""
     NOTION_DB_METRICS_ID: str = ""
 
+    WEATHER_LATITUDE: float = 59.9139
+    WEATHER_LONGITUDE: float = 10.7522
+    WEATHER_TIMEZONE: str = "Europe/Oslo"
+
 
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
