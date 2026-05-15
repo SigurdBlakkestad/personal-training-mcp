@@ -55,6 +55,7 @@ dmypy.json
 # Generated artifacts
 data/
 *.ics
+!docs/training.ics
 backups/
 
 # OS
