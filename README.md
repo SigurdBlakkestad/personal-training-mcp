@@ -52,14 +52,20 @@ Total cost: $0 at single-user scale.
 
 ## Getting started
 
-This is not a one-click install. See:
+This is not a one-click install — it's a fork-and-build-your-own setup. The build was designed so Claude Code does most of the typing; you bring the accounts, secrets, and a weekend of focused time.
 
-- **`SETUP_MANUAL.md`** — manual setup (accounts, OAuth, secrets, Notion databases, iPhone subscription)
-- **`BUILD_PLAN.md`** — staged build with paste-ready Claude Code prompts (12 steps)
-- **`OPERATIONS.md`** — running the system, secret rotation, recovery from common failures
-- **`CLAUDE.md`** — guidance for Claude Code when working on this codebase
+**To run your own copy:**
 
-Total setup time if you follow it end-to-end: roughly one weekend of focused work, spread across multiple sessions.
+1. **Fork this repo** and clone it locally.
+2. **Work through `docs/SETUP_MANUAL.md` top to bottom.** It walks every account, OAuth flow, and secret you need (Supabase, Strava, Withings, Notion, Render, GitHub Pages, optional Garmin).
+3. **Execute `docs/BUILD_PLAN.md` step by step.** 12 paste-ready Claude Code prompts that scaffold the project, build each ingestor, wire up the MCP server, and ship the Notion + iPhone outputs. Use `docs/RUN_STEP_PROMPT.md` as the wrapper prompt that executes one step at a time.
+4. **Once running**, `OPERATIONS.md` covers secret rotation and failure recovery. `CLAUDE.md` is the working-context file Claude reads when you collaborate on this codebase.
+
+Total setup: roughly one weekend of focused work, spread across multiple sessions.
+
+### Want a lighter version?
+
+The full stack is overkill if you don't need SQL aggregations or derived training-load metrics. A "Notion-only" variant — Notion as the source of truth, no Supabase, no Alembic, simpler MCP — is feasible and would cut setup to a few hours. Not built yet; open an issue if you want to collaborate on it.
 
 ## Privacy and data ownership
 

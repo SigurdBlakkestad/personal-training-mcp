@@ -57,5 +57,5 @@ When creating files that don't need scanning every session (generated `.ics` fil
 
 ## Deeper docs
 
-- `docs/BUILD_PLAN.md` — full build sequence with paste-ready Claude Code prompts
+- `docs/BUILD_PLAN.md` — full build sequence with paste-ready Claude Code prompts (designed so anyone forking can rebuild from scratch)
 - `docs/SETUP_MANUAL.md` — manual setup steps (accounts, OAuth, secrets, iPhone calendar)
