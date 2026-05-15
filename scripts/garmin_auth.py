@@ -62,10 +62,16 @@ def main() -> int:
     def prompt_mfa() -> str:
         return input("MFA code (check email/SMS/authenticator app): ").strip()
 
+    tokens_dir = Path.home() / ".garminconnect"
+
     print("Logging in (this may take a moment)...")
     try:
         client = Garmin(email=email, password=password, prompt_mfa=prompt_mfa)
-        client.login()
+        # Pass tokenstore so the library persists tokens after a successful
+        # login via any strategy in its cascade (mobile+*, widget+*, portal+*).
+        # Without it, login can succeed silently via widget/portal yet leave
+        # nothing on disk because the library only dumps when a path is given.
+        client.login(tokenstore=str(tokens_dir))
     except Exception as exc:  # noqa: BLE001  -- one-off CLI tool, surface anything
         print(f"\nLogin failed: {exc}")
         print()
@@ -74,7 +80,6 @@ def main() -> int:
         print("  https://github.com/cyberjunky/python-garminconnect/issues")
         return 1
 
-    tokens_dir = Path.home() / ".garminconnect"
     if not tokens_dir.exists():
         print(f"ERROR: expected tokens at {tokens_dir} but none were written")
         return 1
