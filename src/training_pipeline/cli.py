@@ -5,6 +5,7 @@ from training_pipeline.calendar_publish.publisher import publish as publish_cale
 from training_pipeline.derived.compute import recompute_all
 from training_pipeline.ingestors.garmin import GarminIngestor
 from training_pipeline.ingestors.strava import StravaIngestor
+from training_pipeline.ingestors.withings import WithingsIngestor
 from training_pipeline.notion_sync.runner import run_notion_mirror
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import configure_logging, get_logger
@@ -17,7 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sync = sub.add_parser("sync", help="Run an ingestor for a single source")
-    sync.add_argument("--source", required=True, choices=["strava", "garmin"])
+    sync.add_argument("--source", required=True, choices=["strava", "garmin", "withings"])
 
     sub.add_parser(
         "compute-derived",
@@ -65,6 +66,17 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(
             "cli.sync.complete",
             source="garmin",
+            records_processed=result.records_processed,
+            records_inserted=result.records_inserted,
+            records_updated=result.records_updated,
+        )
+        return 0
+
+    if args.command == "sync" and args.source == "withings":
+        result = WithingsIngestor().run()
+        logger.info(
+            "cli.sync.complete",
+            source="withings",
             records_processed=result.records_processed,
             records_inserted=result.records_inserted,
             records_updated=result.records_updated,
