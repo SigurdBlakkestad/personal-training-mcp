@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     STRAVA_CLIENT_SECRET: str = ""
     STRAVA_REFRESH_TOKEN: str = ""
 
+    GARMIN_EMAIL: str = ""
+    GARMIN_PASSWORD: str = ""
+    GARMINTOKENS_B64: str = ""
+
     ATHLETE_FTP: int = 200
 
     NOTION_TOKEN: str = ""

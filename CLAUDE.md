@@ -40,7 +40,7 @@ Search anchors for navigation. Each path is populated by the build step that int
 
 ## Existing systems
 
-None yet. This section grows as build steps land.
+- Garmin: fragile dependency, isolated via `continue-on-error: true` in `sync_garmin.yml`. Recovery = re-run `scripts/garmin_auth.py` locally, update `GARMINTOKENS_B64` secret.
 
 ## Build plan execution rule
 

@@ -1,0 +1,41 @@
+name: Sync Garmin
+
+on:
+  schedule:
+    - cron: "45 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Sync Garmin
+        id: sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GARMINTOKENS_B64: ${{ secrets.GARMINTOKENS_B64 }}
+          LOG_LEVEL: INFO
+        run: python -m training_pipeline.cli sync --source garmin
+
+      - name: Summarize result
+        if: always()
+        run: |
+          if [ "${{ steps.sync.outcome }}" = "success" ]; then
+            echo "Garmin sync: success" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Garmin sync: FAILED — token may have expired or library may need a bump" >> "$GITHUB_STEP_SUMMARY"
+            echo "Recovery: re-run scripts/garmin_auth.py locally, update GARMINTOKENS_B64 secret." >> "$GITHUB_STEP_SUMMARY"
+          fi
