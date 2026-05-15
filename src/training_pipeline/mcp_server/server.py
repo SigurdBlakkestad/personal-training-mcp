@@ -96,6 +96,15 @@ def log_session(
 def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") -> dict[str, Any]:
     """Save a new weekly plan, marking any previous current plan for that week superseded.
 
+    REQUIRED before calling this tool when the plan includes any cycling
+    session: call ``get_weather_forecast`` for ``week_of`` first and use the
+    result to choose indoor vs outdoor for each ride. Prefer indoor (trainer)
+    on days with precipitation_probability_max ≥ 70%, precipitation_sum_mm > 3,
+    thunderstorm conditions, or wind_speed_max_kmh > 35. Reflect the choice in
+    the session ``title`` (e.g. "Z2 Endurance 80 min — indoor trainer") and
+    ``description``. If the forecast horizon does not cover the whole week,
+    note this in the affected sessions' description.
+
     Arguments:
       week_of: ISO date (YYYY-MM-DD) of the week's Monday.
       plan: list of session dicts. Each session MUST use these keys:
