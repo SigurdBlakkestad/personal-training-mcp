@@ -178,7 +178,7 @@ class GarminIngestor(IngestorBase):
         if self._client_factory is not None:
             return self._client_factory(tokens_path)
 
-        from garminconnect import Garmin  # type: ignore[import-not-found]
+        from garminconnect import Garmin  # type: ignore[import-untyped]
 
         client = Garmin()
         client.login(tokenstore=tokens_path)
