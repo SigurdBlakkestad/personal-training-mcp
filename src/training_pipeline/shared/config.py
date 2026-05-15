@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     NOTION_DB_PLAN_ID: str = ""
     NOTION_DB_METRICS_ID: str = ""
 
-    WEATHER_LATITUDE: float = 59.9139
-    WEATHER_LONGITUDE: float = 10.7522
+    WEATHER_LATITUDE: float = 58.4658
+    WEATHER_LONGITUDE: float = 8.8512
     WEATHER_TIMEZONE: str = "Europe/Oslo"
 
 
