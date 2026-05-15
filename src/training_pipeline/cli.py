@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+from training_pipeline.calendar_publish.publisher import publish as publish_calendar
 from training_pipeline.derived.compute import recompute_all
 from training_pipeline.ingestors.strava import StravaIngestor
 from training_pipeline.notion_sync.runner import run_notion_mirror
@@ -25,6 +26,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "notion-mirror",
         help="Mirror activities, current plan, and dashboard metrics into Notion",
+    )
+
+    sub.add_parser(
+        "publish-calendar",
+        help="Regenerate docs/training.ics from the current weekly plan(s)",
     )
 
     serve = sub.add_parser(
@@ -62,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "notion-mirror":
         mirror_result = run_notion_mirror()
         logger.info("cli.notion_mirror.complete", **mirror_result.to_dict())
+        return 0
+
+    if args.command == "publish-calendar":
+        publish_result = publish_calendar()
+        logger.info("cli.publish_calendar.complete", **publish_result.to_dict())
         return 0
 
     if args.command == "serve-mcp":

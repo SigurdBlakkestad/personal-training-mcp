@@ -12,3 +12,4 @@ fastmcp>=2.0
 fastapi>=0.115
 uvicorn[standard]>=0.32
 notion-client>=2.2,<2.6
+ics>=0.7

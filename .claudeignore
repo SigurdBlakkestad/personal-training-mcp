@@ -16,6 +16,7 @@ htmlcov/
 # Generated data
 data/
 *.ics
+docs/training.ics
 backups/
 
 # Tokens and secrets (also in .gitignore but listed here for safety)
