@@ -213,6 +213,7 @@ def _get_daily_summary(
             "respiration_avg": None,
             "weight_kg": None,
             "body_fat_pct": None,
+            "muscle_mass_kg": None,
         }
 
     for summary in summaries:
@@ -260,6 +261,8 @@ def _get_daily_summary(
             row["weight_kg"] = measurement.weight_kg
         if measurement.body_fat_pct is not None:
             row["body_fat_pct"] = measurement.body_fat_pct
+        if measurement.muscle_mass_kg is not None:
+            row["muscle_mass_kg"] = measurement.muscle_mass_kg
 
     rows = [by_date[d] for d in sorted(by_date.keys())]
     logger.info(

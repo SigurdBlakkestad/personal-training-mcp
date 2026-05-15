@@ -49,7 +49,7 @@ def get_daily_summary(start_date: str, end_date: str) -> list[dict[str, Any]]:
     training_readiness_score (0–100) and training_readiness_level
     (READY/MODERATE/LOW/CAUTION), vo2_max_running, vo2_max_cycling,
     intensity_minutes_moderate, intensity_minutes_vigorous, respiration_avg,
-    weight_kg, body_fat_pct.
+    weight_kg, body_fat_pct, muscle_mass_kg.
     """
     return tools.get_daily_summary(start_date, end_date)
 
