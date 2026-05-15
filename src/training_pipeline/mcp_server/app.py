@@ -14,7 +14,7 @@ from training_pipeline.shared.logging import configure_logging, get_logger
 configure_logging()
 logger = get_logger(__name__)
 
-mcp_app = mcp.http_app(transport="http")
+mcp_app = mcp.http_app(path="/", transport="http")
 
 app = FastAPI(title="personal-training-mcp", lifespan=mcp_app.lifespan)
 
