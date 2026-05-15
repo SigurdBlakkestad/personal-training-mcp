@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     STRAVA_CLIENT_SECRET: str = ""
     STRAVA_REFRESH_TOKEN: str = ""
 
+    WITHINGS_CLIENT_ID: str = ""
+    WITHINGS_CLIENT_SECRET: str = ""
+    WITHINGS_ACCESS_TOKEN: str = ""
+    WITHINGS_REFRESH_TOKEN: str = ""
+    WITHINGS_USERID: str = ""
+
     GARMIN_EMAIL: str = ""
     GARMIN_PASSWORD: str = ""
     GARMINTOKENS_B64: str = ""
