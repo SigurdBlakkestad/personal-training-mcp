@@ -4,12 +4,12 @@ How to run, maintain, and recover this pipeline once it's built. Read this befor
 
 ## Daily / automated rhythm
 
-Once Steps 1-11 of the build plan are complete, the system runs without you:
+Once setup is complete (`docs/SETUP_MANUAL.md`), the system runs without you:
 
 ```
 05:00 UTC   Strava sync (also runs every 2h during the day)
 05:30 UTC   Withings sync
-05:45 UTC   Garmin sync (if Step 12 is done)
+05:45 UTC   Garmin sync (if Garmin tokens are configured)
 06:00 UTC   Compute derived metrics
 06:30 UTC   Notion mirror
 06:35 UTC   Publish .ics calendar (triggered after notion mirror)

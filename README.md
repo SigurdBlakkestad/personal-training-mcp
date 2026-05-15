@@ -52,20 +52,32 @@ Total cost: $0 at single-user scale.
 
 ## Getting started
 
-This is not a one-click install — it's a fork-and-build-your-own setup. The build was designed so Claude Code does most of the typing; you bring the accounts, secrets, and a weekend of focused time.
+The code is already written. To run your own copy you only need to set up your own accounts, paste your secrets in, and trigger the workflows. No coding required.
 
-**To run your own copy:**
+**Setup path:**
 
-1. **Fork this repo** and clone it locally.
-2. **Work through `docs/SETUP_MANUAL.md` top to bottom.** It walks every account, OAuth flow, and secret you need (Supabase, Strava, Withings, Notion, Render, GitHub Pages, optional Garmin).
-3. **Execute `docs/BUILD_PLAN.md` step by step.** 12 paste-ready Claude Code prompts that scaffold the project, build each ingestor, wire up the MCP server, and ship the Notion + iPhone outputs. Use `docs/RUN_STEP_PROMPT.md` as the wrapper prompt that executes one step at a time.
-4. **Once running**, `OPERATIONS.md` covers secret rotation and failure recovery. `CLAUDE.md` is the working-context file Claude reads when you collaborate on this codebase.
+1. **Fork this repo** on GitHub, then `git clone` your fork locally.
+2. **Work through `docs/SETUP_MANUAL.md` top to bottom.** It walks every account, OAuth flow, and secret you need: Supabase (database), Strava, Withings, Notion (3 databases), Render (MCP host), GitHub Pages (calendar host), and optionally Garmin. Output: a populated `.env` file locally and a complete set of GitHub Secrets.
+3. **Run the local install + first migration**, per `OPERATIONS.md` → "Local development":
+   ```
+   python3.12 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   alembic upgrade head        # creates tables in your Supabase project
+   ```
+4. **Trigger the workflows** in your fork's Actions tab to do the first sync (`sync_strava`, `sync_withings`, etc.). After that they run on schedule.
+5. **Connect the MCP server to Claude.ai** once Render is deployed (SETUP_MANUAL Section 7.4) and create your Project (Section 10).
 
-Total setup: roughly one weekend of focused work, spread across multiple sessions.
+`OPERATIONS.md` covers ongoing operation: secret rotation, common failures, backfill, when to refactor.
+
+Total setup: roughly one weekend of focused account-creation and OAuth dances.
 
 ### Want a lighter version?
 
 The full stack is overkill if you don't need SQL aggregations or derived training-load metrics. A "Notion-only" variant — Notion as the source of truth, no Supabase, no Alembic, simpler MCP — is feasible and would cut setup to a few hours. Not built yet; open an issue if you want to collaborate on it.
+
+### Want to see how it was built?
+
+The 12-step Claude Code build plan lives in `docs/archive/BUILD_PLAN.md`, with the wrapper runner prompt in `docs/archive/RUN_STEP_PROMPT.md`. Useful as a template if you want to extend the project (e.g., add a fourth data source) or build something similar from scratch.
 
 ## Privacy and data ownership
 

@@ -42,20 +42,12 @@ Search anchors for navigation. Each path is populated by the build step that int
 
 - Garmin: fragile dependency, isolated via `continue-on-error: true` in `sync_garmin.yml`. Recovery = re-run `scripts/garmin_auth.py` locally, update `GARMINTOKENS_B64` secret. `mobile+*` strategies are usually 429-rate-limited (account-scoped, hours-long window); login still succeeds via `widget+cffi`, which only persists tokens when `client.login(tokenstore=...)` gets a path.
 
-## Build plan execution rule
-
-Every step in `docs/BUILD_PLAN.md` is executed as follows:
-
-1. Spawn a sub-agent first to investigate the current state of the files being touched. The sub-agent must flag edge cases, fallbacks, conditional branches, and non-happy paths — not just the happy path.
-2. Implement in main context using only the sub-agent's summary.
-3. Run lint, typecheck, and tests before finishing the step. All three must pass.
-4. Commit using the exact message specified in the build step.
-
 ## Housekeeping
 
 When creating files that don't need scanning every session (generated `.ics` files, downloaded raw payloads under `data/`, ad-hoc one-off scripts), add them to `.claudeignore` immediately so future context loads stay clean.
 
 ## Deeper docs
 
-- `docs/BUILD_PLAN.md` — full build sequence with paste-ready Claude Code prompts (designed so anyone forking can rebuild from scratch)
-- `docs/SETUP_MANUAL.md` — manual setup steps (accounts, OAuth, secrets, iPhone calendar)
+- `docs/SETUP_MANUAL.md` — manual setup steps for forkers (accounts, OAuth, secrets, iPhone calendar)
+- `OPERATIONS.md` — local development, daily rhythm, secret rotation, failure recovery
+- `docs/archive/` — historical build artifacts (`BUILD_PLAN.md`, `RUN_STEP_PROMPT.md`) — frozen, not part of active workflow

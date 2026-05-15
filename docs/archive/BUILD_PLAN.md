@@ -1,5 +1,7 @@
 # Training Pipeline — Build Plan
 
+> **Status: archived 2026-05-15.** All 12 steps are committed; the code is in the repo. If you've forked this project and want to *run* it, see `docs/SETUP_MANUAL.md` instead — you don't need to re-execute these steps. This file is kept as a reference for understanding how the project was built, and as a template if you want to extend it (e.g., add a fourth data source) by following the same step pattern.
+
 Staged build plan with paste-ready Claude Code prompts. Each step is independent; `/clear` between steps when noted. Garmin (the fragile dependency) is **last** — the other sources will be working before you touch it.
 
 **Stack:** Python 3.12 · Supabase Postgres · GitHub Actions · MCP Python SDK (FastMCP) · Notion API · Strava API · Withings API · `python-garminconnect` (final phase)

@@ -1,6 +1,8 @@
 # Training Pipeline — Setup Manual
 
-Everything you do by hand. Follow top to bottom; each section is referenced from the matching step in `BUILD_PLAN.md`.
+Everything you do by hand to run this pipeline against your own accounts. The code is already in the repo — this guide gets you to the point where you can trigger the workflows and they'll work.
+
+Follow top to bottom. Each section is independent (you can pause between Strava and Withings if you need a break), but later sections depend on earlier secrets being in place.
 
 **Required accounts (all free):**
 - GitHub
@@ -14,7 +16,7 @@ Everything you do by hand. Follow top to bottom; each section is referenced from
 
 ---
 
-## Section 1 — Local prerequisites (before any build step)
+## Section 1 — Local prerequisites
 
 ### 1.1 Install required tools on macOS
 
@@ -46,55 +48,29 @@ git config --global user.email "your-email@example.com"
 
 ---
 
-## Section 2 — Create the GitHub repo (before Step 1)
+## Section 2 — Fork the repo
 
-Run these commands locally. They create a public repo named `personal-training-mcp`, push an initial commit, and leave you ready for Step 1 of the build plan.
+1. Go to https://github.com/<original-owner>/personal-training-mcp and click **Fork** (top right). Keep the name `personal-training-mcp` or pick your own.
+2. Clone your fork locally:
+   ```bash
+   cd ~/code   # or wherever you keep projects
+   git clone git@github.com:<YOUR-USERNAME>/personal-training-mcp.git
+   cd personal-training-mcp
+   ```
+3. Verify it works locally:
+   ```bash
+   python3.12 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   pytest   # should be all green
+   ```
 
-```bash
-# Pick a parent directory (e.g. ~/code)
-cd ~/code   # or wherever you keep projects
+You now have the code. The rest of this manual gets you the credentials and external services it needs to run.
 
-# Create the local project
-mkdir personal-training-mcp && cd personal-training-mcp
-
-# Initialise git on main
-git init -b main
-
-# Minimal README so the first commit isn't empty
-cat > README.md <<'EOF'
-# personal-training-mcp
-
-Personal training data platform. See BUILD_PLAN.md and SETUP_MANUAL.md.
-EOF
-
-# Save the build plan and setup manual files alongside README
-# (Drop the files from Claude into this directory before this step)
-
-# Create the public GitHub repo and push
-gh repo create personal-training-mcp \
-  --public \
-  --source=. \
-  --remote=origin \
-  --description "Personal training data pipeline: Strava/Withings/Garmin -> Postgres -> Claude + Notion + iPhone calendar"
-
-# First commit
-git add README.md BUILD_PLAN.md SETUP_MANUAL.md
-git commit -m "chore: initial commit with build plan and setup manual"
-git push -u origin main
-```
-
-If you'd rather create the repo manually on github.com first, do that, then:
-
-```bash
-git remote add origin git@github.com:<YOUR-USERNAME>/personal-training-mcp.git
-git add README.md BUILD_PLAN.md SETUP_MANUAL.md
-git commit -m "chore: initial commit"
-git push -u origin main
-```
+> **For the original builder:** Section 2 was originally a `git init` + `gh repo create` flow for the very first commit. That's preserved in `docs/archive/BUILD_PLAN.md` if you ever need to recreate the repo from scratch.
 
 ---
 
-## Section 3 — Supabase (before Step 1)
+## Section 3 — Supabase
 
 ### 3.1 Create the project
 
@@ -116,21 +92,20 @@ git push -u origin main
 
 ### 3.3 Create local .env
 
-In your `personal-training-mcp` repo:
+In your `personal-training-mcp` clone:
 
 ```bash
-cp .env.example .env   # this file gets created in Step 1; for now just touch
-touch .env
+cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` and set:
 
 ```
 DATABASE_URL=postgresql+psycopg://postgres:YOUR-PASSWORD@db.xxxxx.supabase.co:5432/postgres
 LOG_LEVEL=INFO
 ```
 
-**Verify `.env` is in `.gitignore`** before any commit (Step 1 adds it automatically — if you're touching `.env` before Step 1, double-check).
+`.env` is already in `.gitignore` — never commit it. You'll add the other source credentials (Strava, Withings, Notion, etc.) to this same file as you complete each section.
 
 ### 3.4 Add the connection string as a GitHub Secret
 
@@ -144,7 +119,7 @@ In Supabase: **Database** → **Extensions** → search for `pgcrypto` → enabl
 
 ---
 
-## Section 4 — Strava (before Step 5)
+## Section 4 — Strava
 
 ### 4.1 Create a Strava API application
 
@@ -210,7 +185,7 @@ Strava rotates refresh tokens. The ingestor logs a WARNING when it receives a ne
 
 ---
 
-## Section 5 — Withings (before Step 6)
+## Section 5 — Withings
 
 ### 5.1 Create a Withings developer account + app
 
@@ -221,7 +196,7 @@ Strava rotates refresh tokens. The ingestor logs a WARNING when it receives a ne
    - Application name: `personal-training-mcp`
    - Description: `Personal training data sync`
    - Logo: any small image
-   - **Callback URL: `http://localhost:8765/callback`** (must match exactly what the helper script uses in Step 6)
+   - **Callback URL: `http://localhost:8765/callback`** (must match exactly what `scripts/withings_auth.py` uses)
 5. After creating: **Client ID** and **Consumer Secret** appear.
 
 ### 5.2 Add Withings IDs to .env and GitHub Secrets
@@ -230,17 +205,15 @@ Strava rotates refresh tokens. The ingestor logs a WARNING when it receives a ne
 ```
 WITHINGS_CLIENT_ID=...
 WITHINGS_CLIENT_SECRET=...
-# Access/refresh tokens come from running the helper in Step 6
+# Access/refresh tokens come from running scripts/withings_auth.py (Section 5.3)
 WITHINGS_ACCESS_TOKEN=
 WITHINGS_REFRESH_TOKEN=
 WITHINGS_USERID=
 ```
 
-GitHub Secrets — add `WITHINGS_CLIENT_ID` and `WITHINGS_CLIENT_SECRET` now. The other three you'll add after running the helper script in Step 6.
+GitHub Secrets — add `WITHINGS_CLIENT_ID` and `WITHINGS_CLIENT_SECRET` now. The other three you'll add after running the helper script (Section 5.3).
 
-### 5.3 After Step 6 — run the OAuth helper
-
-Once Step 6 is built:
+### 5.3 Run the OAuth helper
 
 ```bash
 python scripts/withings_auth.py
@@ -254,7 +227,7 @@ The script will:
 
 ---
 
-## Section 6 — Notion (before Step 10)
+## Section 6 — Notion
 
 ### 6.1 Create the integration
 
@@ -328,16 +301,16 @@ Add all four as GitHub Secrets.
 
 ---
 
-## Section 7 — Render (before Step 9, for hosting the MCP server)
+## Section 7 — Render (hosts the MCP server)
 
 ### 7.1 Create account
 
 1. https://render.com → **Get Started** → sign in with GitHub
 2. Authorize Render to access your `personal-training-mcp` repo
 
-### 7.2 Connect the repo (after Step 9 is built)
+### 7.2 Connect the repo
 
-Step 9 adds `render.yaml` to the repo, which Render auto-detects.
+The repo already includes `render.yaml`, which Render auto-detects.
 
 1. Render dashboard → **New +** → **Blueprint**
 2. Select `personal-training-mcp` repo → Render reads `render.yaml`
@@ -358,12 +331,12 @@ After first deploy, your URL is `https://<service-name>.onrender.com`. The MCP e
 1. https://claude.ai → **Settings** → **Connectors** → **Add custom connector**
 2. Type: MCP
 3. URL: `https://<service-name>.onrender.com/mcp`
-4. Authentication: none (your MCP server is single-user; if you want belt-and-braces, add a shared secret check in Step 9)
+4. Authentication: none (the MCP server is single-user; if you want belt-and-braces, add a shared-secret check in `mcp_server/app.py`)
 5. Save → return to your training Project → start a conversation → Claude should now see your tools
 
 ---
 
-## Section 8 — GitHub Pages (before Step 11, for the iPhone calendar)
+## Section 8 — GitHub Pages (hosts the iPhone calendar feed)
 
 ### 8.1 Enable Pages
 
@@ -374,9 +347,9 @@ After first deploy, your URL is `https://<service-name>.onrender.com`. The MCP e
 
 The site URL will be `https://<your-username>.github.io/personal-training-mcp/`.
 
-After Step 11 generates `docs/training.ics`, the calendar will be accessible at `https://<your-username>.github.io/personal-training-mcp/training.ics`.
+After the `publish_calendar` workflow runs and commits `docs/training.ics`, the calendar will be accessible at `https://<your-username>.github.io/personal-training-mcp/training.ics`.
 
-### 8.2 Subscribe on iPhone (after Step 11 publishes the calendar)
+### 8.2 Subscribe on iPhone (after the first calendar publish)
 
 1. iPhone: **Settings** → **Calendar** → **Accounts** → **Add Account** → **Other**
 2. **Add Subscribed Calendar**
@@ -388,7 +361,7 @@ The calendar refreshes automatically based on iOS's polling interval (typically 
 
 ---
 
-## Section 9 — Garmin (before Step 12, do this LAST)
+## Section 9 — Garmin (optional, do this LAST)
 
 Garmin is the most fragile dependency. Don't tackle this until Strava, Withings, derived metrics, MCP, Notion, and iCal are all running for at least a week. That way, when something inevitably breaks, you'll know where.
 
@@ -397,7 +370,7 @@ Garmin is the most fragile dependency. Don't tackle this until Strava, Withings,
 - Your Garmin Connect account (the one tied to your FR945 and Edge 840)
 - If you have 2FA enabled (recommended): be ready to type an MFA code
 
-### 9.2 After Step 12 is built — interactive token bootstrap
+### 9.2 Interactive token bootstrap
 
 Locally:
 
@@ -441,7 +414,7 @@ Don't panic-fix on the day of breakage. Your other data sources have you covered
 
 ## Section 10 — Claude Project setup
 
-This isn't strictly tied to a build step — do it whenever you're ready to start coaching conversations.
+Do this whenever you're ready to start coaching conversations — typically after Render is live and the MCP server is reachable.
 
 ### 10.1 Create the Project
 
@@ -455,8 +428,8 @@ This isn't strictly tied to a build step — do it whenever you're ready to star
 
 ### 10.2 Connect the MCP server
 
-After Step 9 is built and deployed:
-1. **Settings** → **Connectors** → **Add custom connector** → paste your Render URL
+Once Render shows the service as live (Section 7.3):
+1. **Settings** → **Connectors** → **Add custom connector** → paste your Render URL (with the `/mcp` path)
 2. Back in the Project, the MCP tools are now available in every conversation
 
 ### 10.3 First conversation
@@ -480,27 +453,20 @@ Don't write a 12-week plan — we build week by week.
 Use this as a single page to track where you are.
 
 ```
-[ ] Section 1: macOS prerequisites installed
-[ ] Section 2: GitHub repo created and pushed
+[ ] Section 1: macOS / Python 3.12 / git / gh / Claude Code installed
+[ ] Section 2: forked the repo, cloned locally, `pytest` green
 [ ] Section 3: Supabase project + DATABASE_URL in .env and GitHub Secrets
-[ ] BUILD: Steps 1-3 (scaffold, CLAUDE.md, schema)
-[ ] Section 4: Strava app + refresh token + secrets
-[ ] BUILD: Steps 4-5 (ingestor base + Strava)
-[ ] Section 5: Withings developer app + client_id/secret
-[ ] BUILD: Step 6 (Withings OAuth helper)
-[ ] Section 5.3: Run helper, get tokens, add to secrets
-[ ] BUILD: Step 7 (Withings ingestor)
-[ ] BUILD: Step 8 (derived metrics)
-[ ] Section 7: Render account
-[ ] BUILD: Step 9 (MCP server)
-[ ] Section 7.4: Connect MCP to Claude
-[ ] Section 6: Notion integration + 3 databases
-[ ] BUILD: Step 10 (Notion mirror)
-[ ] Section 8: GitHub Pages enabled
-[ ] BUILD: Step 11 (iCal generator)
-[ ] Section 8.2: Subscribe on iPhone
-[ ] WAIT: run the system for at least a week
-[ ] Section 9: Garmin auth bootstrap
-[ ] BUILD: Step 12 (Garmin ingestor)
-[ ] Section 10: Claude Project + MCP connector
+[ ] One-time install: pip install -r requirements.txt && alembic upgrade head
+[ ] Section 4: Strava app + refresh token in .env and GitHub Secrets
+[ ] Section 5: Withings developer app, client_id/secret in .env and GitHub Secrets
+[ ] Section 5.3: ran scripts/withings_auth.py, tokens added
+[ ] Section 6: Notion integration + 3 databases shared with it, IDs in secrets
+[ ] Section 7: Render service deployed, MCP_URL noted
+[ ] Section 8: GitHub Pages enabled for /docs on main
+[ ] First sync: trigger sync_strava, sync_withings, compute_derived, notion_mirror, publish_calendar manually from Actions tab
+[ ] Section 8.2: subscribed to .ics URL on iPhone
+[ ] Section 10: Claude Project created, MCP connector pointed at Render URL
+[ ] (optional, last) Section 9: Garmin token bootstrap → GARMINTOKENS_B64 secret → trigger sync_garmin
 ```
+
+After this is all green, you only have to revisit `OPERATIONS.md` for secret rotation, failure recovery, and ongoing weekly/monthly rhythm.
