@@ -43,7 +43,16 @@ jobs:
           git add docs/training.ics
           if git diff --staged --quiet; then
             echo "No calendar changes to commit."
-          else
-            git commit -m "chore: update training.ics"
-            git push
+            exit 0
           fi
+          git commit -m "chore: update training.ics"
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Push succeeded on attempt $attempt."
+              exit 0
+            fi
+            echo "Push attempt $attempt rejected; rebasing on origin/main and retrying."
+            git pull --rebase origin main
+          done
+          echo "Push failed after 5 attempts."
+          exit 1

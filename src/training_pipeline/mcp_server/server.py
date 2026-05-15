@@ -96,7 +96,25 @@ def log_session(
 def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") -> dict[str, Any]:
     """Save a new weekly plan, marking any previous current plan for that week superseded.
 
-    `week_of` is ISO date of the week's Monday. `plan` is a list of session dicts.
+    Arguments:
+      week_of: ISO date (YYYY-MM-DD) of the week's Monday.
+      plan: list of session dicts. Each session MUST use these keys:
+        - date: ISO date YYYY-MM-DD (required)
+        - session_type: one of "cycling" | "running" | "swimming" | "lifting" |
+          "walking" | "mobility" | "rest" | "other" (required)
+        - title: short label shown as the calendar/Notion event name (required)
+        - duration_min: integer minutes (required; downstream defaults to 60 if missing)
+        - description: longer description of the session (required)
+        - intensity: "Easy" | "Moderate" | "Hard" (optional)
+        - time: "HH:MM" 24h, Europe/Oslo (optional; defaults to 08:00)
+        - notes: free-text notes (optional)
+      notes: optional notes about the whole week.
+
+    Example session:
+      {"date": "2026-05-15", "session_type": "cycling",
+       "title": "Z2 Endurance 80 min", "duration_min": 80,
+       "description": "Steady Z2 ride, 125-138 bpm, 85-95 RPM.",
+       "intensity": "Easy", "time": "12:30"}
     """
     return tools.save_weekly_plan(week_of=week_of, plan=plan, notes=notes)
 
