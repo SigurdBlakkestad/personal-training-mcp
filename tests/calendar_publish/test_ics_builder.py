@@ -189,6 +189,44 @@ def test_render_returns_valid_ics_string() -> None:
     assert "SUMMARY:Cycling" in output
 
 
+def test_day_and_type_aliases_are_accepted() -> None:
+    plan = _plan(
+        date(2026, 5, 11),
+        [
+            {
+                "day": "2026-05-15",
+                "type": "cycling",
+                "title": "Rebuild Z2 Progressiv — 80 min",
+                "time": "12:30",
+                "description": "Progressive aerobic base.",
+            }
+        ],
+    )
+    events = list(build_calendar([plan]).events)
+    assert len(events) == 1
+    event = events[0]
+    assert event.name == "Rebuild Z2 Progressiv — 80 min"
+    assert event.begin.hour == 12
+    assert event.begin.minute == 30
+    assert "Progressive aerobic base." in event.description
+
+
+def test_title_is_preferred_over_session_type_for_name() -> None:
+    plan = _plan(
+        date(2026, 5, 18),
+        [
+            {
+                "date": "2026-05-18",
+                "session_type": "Cycling",
+                "title": "Endurance Ride 90 min",
+                "duration_min": 90,
+            }
+        ],
+    )
+    event = next(iter(build_calendar([plan]).events))
+    assert event.name == "Endurance Ride 90 min"
+
+
 def test_invalid_plan_field_is_skipped() -> None:
     plan = WeeklyPlan(
         week_of=date(2026, 5, 18),

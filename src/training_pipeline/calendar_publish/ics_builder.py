@@ -24,6 +24,18 @@ DEFAULT_START_TIME = time(8, 0)
 DEFAULT_DURATION_MINUTES = 60
 UID_DOMAIN = "personal-training-mcp"
 
+DATE_KEYS = ("date", "day")
+TYPE_KEYS = ("session_type", "type")
+NAME_KEYS = ("title", "name", "session_type", "type")
+DURATION_KEYS = ("duration_min", "duration", "duration_minutes")
+
+
+def _first_present(session: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in session and session[key] is not None:
+            return session[key]
+    return None
+
 
 def _parse_session_date(value: Any) -> date_type | None:
     if isinstance(value, date_type) and not isinstance(value, datetime):
@@ -82,24 +94,27 @@ def _build_description(session: dict[str, Any]) -> str:
 
 
 def _session_to_event(plan: WeeklyPlan, session: dict[str, Any]) -> Event | None:
-    session_date = _parse_session_date(session.get("date"))
+    session_date = _parse_session_date(_first_present(session, DATE_KEYS))
     if session_date is None:
         return None
 
-    session_type_raw = session.get("session_type")
+    type_raw = _first_present(session, TYPE_KEYS)
     session_type = (
-        session_type_raw.strip()
-        if isinstance(session_type_raw, str) and session_type_raw.strip()
-        else "Training"
+        type_raw.strip() if isinstance(type_raw, str) and type_raw.strip() else "Training"
+    )
+
+    name_raw = _first_present(session, NAME_KEYS)
+    event_name = (
+        name_raw.strip() if isinstance(name_raw, str) and name_raw.strip() else session_type
     )
 
     start_time = _parse_session_time(session.get("time"))
     begin = datetime.combine(session_date, start_time, tzinfo=CALENDAR_TIMEZONE)
 
     event = Event()
-    event.name = session_type
+    event.name = event_name
     event.begin = begin
-    event.duration = _parse_duration(session.get("duration_min"))
+    event.duration = _parse_duration(_first_present(session, DURATION_KEYS))
     event.uid = stable_uid(plan.week_of, session_date, session_type)
     description = _build_description(session)
     if description:
