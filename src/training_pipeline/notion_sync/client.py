@@ -102,10 +102,13 @@ class NotionClient:
         parent: dict[str, Any],
         properties: dict[str, Any],
         children: list[dict[str, Any]] | None = None,
+        icon: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"parent": parent, "properties": properties}
         if children is not None:
             kwargs["children"] = children
+        if icon is not None:
+            kwargs["icon"] = icon
         result = self._call("pages.create", self._client.pages.create, **kwargs)
         return dict(result)
 

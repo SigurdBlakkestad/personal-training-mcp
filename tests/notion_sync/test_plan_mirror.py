@@ -200,13 +200,14 @@ def test_non_dict_session_items_are_skipped() -> None:
     assert result["weeks"] == 1
 
 
-def test_session_without_exercises_has_no_table_but_has_comments() -> None:
+def test_session_without_exercises_has_no_table_but_has_notes_section() -> None:
     plan = _plan(
         date(2026, 5, 11),
         [
             {
                 "date": "2026-05-12",
                 "session_type": "cycling",
+                "title": "Z2 easy spin",
                 "description": "easy spin",
                 "duration_min": 45,
             }
@@ -222,11 +223,92 @@ def test_session_without_exercises_has_no_table_but_has_comments() -> None:
     assert "table" not in types
     assert types[0] == "paragraph"
     assert children[0]["paragraph"]["rich_text"][0]["text"]["content"] == "easy spin"
-    # Comments heading + empty paragraph at the end.
+    # Notes heading + empty paragraph at the end (replaces old Comments label).
     assert types[-2] == "heading_2"
-    assert children[-2]["heading_2"]["rich_text"][0]["text"]["content"] == "Comments"
+    assert children[-2]["heading_2"]["rich_text"][0]["text"]["content"] == "Notes"
     assert types[-1] == "paragraph"
     assert children[-1]["paragraph"]["rich_text"] == []
+
+
+def test_title_field_drives_page_title_not_description() -> None:
+    plan = _plan(
+        date(2026, 5, 11),
+        [
+            {
+                "date": "2026-05-12",
+                "session_type": "strength",
+                "title": "Upper Push",
+                "description": "WARM-UP (8 min): cat-cow x8 | t-spine x8/s\nMAIN: bench press 4x8",
+                "duration_min": 60,
+            }
+        ],
+    )
+    session = FakeSession(plan)
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    plan_mirror.mirror_plan(session, client, "db-plan")
+    props = client.create_page.call_args.kwargs["properties"]
+    assert props["Session"]["title"][0]["text"]["content"] == "Upper Push"
+    # ``strength`` alias collapses to the canonical Lifting select option.
+    assert props["Session Type"]["select"]["name"] == "Lifting"
+    # Description is no longer mirrored into a property — only the body.
+    assert "Description" not in props
+
+
+def test_session_icon_is_set_from_session_type() -> None:
+    plan = _plan(
+        date(2026, 5, 11),
+        [
+            {"date": "2026-05-12", "session_type": "cycling", "title": "Z2"},
+            {"date": "2026-05-13", "session_type": "rest", "title": "OFF"},
+            {"date": "2026-05-14", "session_type": "strength", "title": "Pull"},
+        ],
+    )
+    session = FakeSession(plan)
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    plan_mirror.mirror_plan(session, client, "db-plan")
+    icons = [c.kwargs["icon"]["emoji"] for c in client.create_page.call_args_list]
+    assert icons == ["🚴", "💤", "🏋️"]
+
+
+def test_description_section_headers_render_bold() -> None:
+    plan = _plan(
+        date(2026, 5, 11),
+        [
+            {
+                "date": "2026-05-12",
+                "session_type": "strength",
+                "title": "Upper Push",
+                "description": (
+                    "WARM-UP (8 min): cat-cow x8 | t-spine x8/s\n"
+                    "\n"
+                    "MAIN:\n"
+                    "1) DB press 4x8-10 @ RIR 2\n"
+                    "2) Row 4x10"
+                ),
+            }
+        ],
+    )
+    session = FakeSession(plan)
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    plan_mirror.mirror_plan(session, client, "db-plan")
+    children = client.create_page.call_args.kwargs["children"]
+    paragraphs = [b for b in children if b["type"] == "paragraph"]
+    # Blank line dropped; 4 real lines preserved + 1 empty Notes paragraph
+    assert len(paragraphs) == 5
+    # First paragraph carries the WARM-UP line and is bold (section header).
+    first = paragraphs[0]["paragraph"]["rich_text"][0]
+    assert first["text"]["content"].startswith("WARM-UP")
+    assert first["annotations"]["bold"] is True
+    # Plain workout line not bold.
+    bench = paragraphs[2]["paragraph"]["rich_text"][0]
+    assert bench["text"]["content"].startswith("1) DB press")
+    assert "annotations" not in bench
 
 
 def test_session_with_exercises_emits_table_block() -> None:

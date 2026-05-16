@@ -18,17 +18,52 @@ from training_pipeline.shared.models import WeeklyPlan
 
 logger = get_logger(__name__)
 
-SESSION_TYPE_OPTIONS = {"Cycling", "Lifting", "Mobility", "Rest", "Other"}
+# Normalized session-type vocabulary. Maps raw input strings (from the MCP
+# save_weekly_plan tool, which Claude sets freely) into the canonical labels
+# that show up as Notion select options. ``Strength`` is a common synonym for
+# ``Lifting`` in this codebase's plans, so it collapses to ``Lifting``.
+SESSION_TYPE_ALIASES: dict[str, str] = {
+    "cycling": "Cycling",
+    "running": "Running",
+    "swimming": "Swimming",
+    "lifting": "Lifting",
+    "strength": "Lifting",
+    "weights": "Lifting",
+    "mobility": "Mobility",
+    "walking": "Walking",
+    "walk": "Walking",
+    "rest": "Rest",
+    "off": "Rest",
+}
+
+# Emoji icon per canonical session type — gives Notion calendar tiles and
+# gallery cards a glanceable indicator without colour-coding the title text.
+SESSION_ICONS: dict[str, str] = {
+    "Cycling": "🚴",
+    "Running": "🏃",
+    "Swimming": "🏊",
+    "Lifting": "🏋️",
+    "Walking": "🚶",
+    "Mobility": "🧘",
+    "Rest": "💤",
+    "Other": "📌",
+}
+
 INTENSITY_OPTIONS = {"Easy", "Moderate", "Hard"}
 
 TABLE_HEADERS = ("Exercise", "Target", "Done reps", "Kg", "RPE", "Notes")
+# Notion rich_text limit per item — content longer than this must be split
+# across multiple text objects within the same block.
+RICH_TEXT_CHUNK = 1900
 
 
 def _normalize_session_type(raw: Any) -> str:
     if not isinstance(raw, str):
         return "Other"
-    candidate = raw.strip().title()
-    return candidate if candidate in SESSION_TYPE_OPTIONS else "Other"
+    key = raw.strip().lower()
+    if not key:
+        return "Other"
+    return SESSION_TYPE_ALIASES.get(key, "Other")
 
 
 def _normalize_intensity(raw: Any) -> str | None:
@@ -36,6 +71,24 @@ def _normalize_intensity(raw: Any) -> str | None:
         return None
     candidate = raw.strip().title()
     return candidate if candidate in INTENSITY_OPTIONS else None
+
+
+def _resolve_title(session_dict: dict[str, Any], session_type: str) -> str:
+    """Find a calendar-tile-friendly title. Prefer the explicit ``title`` field
+    (what the MCP tool docstring asks for); fall back to the first description
+    line; finally to the canonical session type. Never falls back to the full
+    multi-line description — that's what caused titles to start with
+    'WARM-UP (8 min): ...'.
+    """
+    explicit = session_dict.get("title")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    desc = session_dict.get("description")
+    if isinstance(desc, str):
+        first_line = desc.strip().splitlines()[0].strip() if desc.strip() else ""
+        if first_line and len(first_line) <= 80:
+            return first_line
+    return session_type
 
 
 def _build_session_properties(week_of: date_type, session_dict: dict[str, Any]) -> dict[str, Any]:
@@ -47,19 +100,19 @@ def _build_session_properties(week_of: date_type, session_dict: dict[str, Any]) 
     else:
         session_date = week_of.isoformat()
 
-    title = str(session_dict.get("description") or session_dict.get("session_type") or "Session")
-    description = str(session_dict.get("description") or "")
+    session_type = _normalize_session_type(session_dict.get("session_type"))
+    title = _resolve_title(session_dict, session_type)
     duration = session_dict.get("duration_min")
 
-    session_type = _normalize_session_type(session_dict.get("session_type"))
     props: dict[str, Any] = {
         "Session": {"title": [{"text": {"content": title[:2000]}}]},
         "Date": {"date": {"start": session_date}},
         "Session Type": {"select": {"name": session_type}},
         "Status": {"select": {"name": "Planned"}},
     }
-    if description:
-        props["Description"] = {"rich_text": [{"text": {"content": description[:2000]}}]}
+    # Description is intentionally NOT mirrored into a database property — the
+    # full text lives in the page body where Notion can render line breaks and
+    # the user is not forced to read the same content twice.
     if isinstance(duration, int | float):
         props["Duration (min)"] = {"number": float(duration)}
     intensity = _normalize_intensity(session_dict.get("intensity"))
@@ -91,11 +144,60 @@ def _rich_text(content: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": {"content": content[:2000]}}]
 
 
+def _is_section_header(line: str) -> bool:
+    """Detect lines like 'WARM-UP (8 min):' or 'MAIN:' so they can render as
+    bold sub-headers rather than plain paragraphs. Heuristic: the part before
+    the first ':' is short, and once parenthetical context (e.g. ``(8 min)``)
+    is stripped, what remains is uppercase letters / digits / hyphens /
+    spaces — i.e. it looks like a label, not a sentence."""
+    if ":" not in line:
+        return False
+    head, _, _ = line.partition(":")
+    head = head.strip()
+    if not head or len(head) > 40:
+        return False
+    bare_chars: list[str] = []
+    depth = 0
+    for ch in head:
+        if ch == "(":
+            depth += 1
+            continue
+        if ch == ")":
+            if depth > 0:
+                depth -= 1
+            continue
+        if depth == 0:
+            bare_chars.append(ch)
+    bare = "".join(bare_chars).strip()
+    if not bare:
+        return False
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅ0123456789 /-")
+    return all(ch in allowed for ch in bare) and any(ch.isalpha() for ch in bare)
+
+
 def _paragraph(content: str) -> dict[str, Any]:
     return {
         "object": "block",
         "type": "paragraph",
         "paragraph": {"rich_text": _rich_text(content)},
+    }
+
+
+def _bold_paragraph(content: str) -> dict[str, Any]:
+    """Paragraph rendered with bold annotation — used for section headers
+    extracted from the description ('WARM-UP', 'MAIN', etc.)."""
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [
+                {
+                    "type": "text",
+                    "text": {"content": content[:2000]},
+                    "annotations": {"bold": True},
+                }
+            ]
+        },
     }
 
 
@@ -105,6 +207,28 @@ def _heading_2(content: str) -> dict[str, Any]:
         "type": "heading_2",
         "heading_2": {"rich_text": _rich_text(content)},
     }
+
+
+def _description_blocks(description: str) -> list[dict[str, Any]]:
+    """Render the description's multi-line content as one paragraph per line.
+
+    Lines that look like section headers (``WARM-UP (8 min):``, ``MAIN:`` …)
+    become bold paragraphs so the structure is scannable in the page body.
+    Empty lines collapse — Notion's paragraph spacing handles the visual
+    grouping on its own.
+    """
+    if not description.strip():
+        return []
+    blocks: list[dict[str, Any]] = []
+    for raw_line in description.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        if _is_section_header(line):
+            blocks.append(_bold_paragraph(line))
+        else:
+            blocks.append(_paragraph(line))
+    return blocks
 
 
 def _table_row(values: list[str]) -> dict[str, Any]:
@@ -138,15 +262,14 @@ def _exercises_table(exercises: list[dict[str, Any]]) -> dict[str, Any]:
 def _build_session_children(session_dict: dict[str, Any]) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     description = str(session_dict.get("description") or "")
-    if description:
-        blocks.append(_paragraph(description))
+    blocks.extend(_description_blocks(description))
 
     exercises = session_dict.get("exercises")
     if isinstance(exercises, list) and exercises:
         blocks.append(_heading_2("Exercises"))
         blocks.append(_exercises_table(exercises))
 
-    blocks.append(_heading_2("Comments"))
+    blocks.append(_heading_2("Notes"))
     blocks.append(_paragraph(""))
     return blocks
 
@@ -213,10 +336,13 @@ def _mirror_one_plan(
             continue
         properties = _build_session_properties(plan.week_of, session_dict)
         children = _build_session_children(session_dict)
+        session_type = _normalize_session_type(session_dict.get("session_type"))
+        icon = {"type": "emoji", "emoji": SESSION_ICONS.get(session_type, SESSION_ICONS["Other"])}
         client.create_page(
             parent={"database_id": database_id},
             properties=properties,
             children=children,
+            icon=icon,
         )
         created += 1
     logger.info(
