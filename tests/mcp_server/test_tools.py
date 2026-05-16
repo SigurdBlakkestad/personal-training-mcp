@@ -551,6 +551,66 @@ def test_save_weekly_plan_rejects_non_list(session: FakeSession) -> None:
         )
 
 
+def test_save_weekly_plan_accepts_exercises(session: FakeSession) -> None:
+    week = date(2026, 5, 4)
+    session.dispatch = lambda stmt: []
+    session.scalar_dispatch = lambda stmt: 0
+
+    result = tools._save_weekly_plan(
+        session,
+        week_of=week,
+        plan=[
+            {
+                "date": "2026-05-06",
+                "session_type": "lifting",
+                "description": "lower body",
+                "duration_min": 60,
+                "exercises": [
+                    {"name": "Squat", "sets": 5, "reps": 5, "weight_kg": 100.0},
+                    {"name": "RDL", "sets": 3, "reps": "8-10", "weight_kg": 80, "notes": "slow"},
+                    {"name": "Calf raise"},
+                ],
+            }
+        ],
+        notes="",
+    )
+
+    assert result["sessions"] == 1
+    stored = next(o for o in session.added if isinstance(o, WeeklyPlan))
+    assert stored.plan[0]["exercises"][0]["name"] == "Squat"
+    assert stored.plan[0]["exercises"][1]["reps"] == "8-10"
+
+
+def test_save_weekly_plan_rejects_malformed_exercises(session: FakeSession) -> None:
+    week = date(2026, 5, 4)
+    session.dispatch = lambda stmt: []
+    session.scalar_dispatch = lambda stmt: 0
+
+    with pytest.raises(ValueError, match=r"exercises\[0\]\.name"):
+        tools._save_weekly_plan(
+            session,
+            week_of=week,
+            plan=[{"exercises": [{"sets": 5}]}],
+            notes="",
+        )
+
+    with pytest.raises(ValueError, match=r"exercises\[0\]\.sets"):
+        tools._save_weekly_plan(
+            session,
+            week_of=week,
+            plan=[{"exercises": [{"name": "Squat", "sets": "five"}]}],
+            notes="",
+        )
+
+    with pytest.raises(ValueError, match=r"exercises must be a list"):
+        tools._save_weekly_plan(
+            session,
+            week_of=week,
+            plan=[{"exercises": "Squat 5x5"}],
+            notes="",
+        )
+
+
 def test_update_athlete_context_rejects_unknown_fields(session: FakeSession) -> None:
     with pytest.raises(ValueError, match="unsupported athlete_context fields"):
         tools._update_athlete_context(session, {"unknown_key": 1})

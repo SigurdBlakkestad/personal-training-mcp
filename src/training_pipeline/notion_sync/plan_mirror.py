@@ -21,6 +21,8 @@ logger = get_logger(__name__)
 SESSION_TYPE_OPTIONS = {"Cycling", "Lifting", "Mobility", "Rest", "Other"}
 INTENSITY_OPTIONS = {"Easy", "Moderate", "Hard"}
 
+TABLE_HEADERS = ("Exercise", "Target", "Done reps", "Kg", "RPE", "Notes")
+
 
 def _normalize_session_type(raw: Any) -> str:
     if not isinstance(raw, str):
@@ -64,6 +66,89 @@ def _build_session_properties(week_of: date_type, session_dict: dict[str, Any]) 
     if intensity is not None:
         props["Intensity"] = {"select": {"name": intensity}}
     return props
+
+
+def _format_target(exercise: dict[str, Any]) -> str:
+    sets = exercise.get("sets")
+    reps = exercise.get("reps")
+    weight = exercise.get("weight_kg")
+    parts: list[str] = []
+    if isinstance(sets, int) and isinstance(reps, int | str):
+        parts.append(f"{sets}×{reps}")
+    elif isinstance(sets, int):
+        parts.append(f"{sets} sets")
+    elif isinstance(reps, int | str):
+        parts.append(f"{reps} reps")
+    if isinstance(weight, int | float):
+        weight_str = f"{weight:g}"
+        parts.append(f"@{weight_str}kg")
+    return " ".join(parts)
+
+
+def _rich_text(content: str) -> list[dict[str, Any]]:
+    if not content:
+        return []
+    return [{"type": "text", "text": {"content": content[:2000]}}]
+
+
+def _paragraph(content: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": _rich_text(content)},
+    }
+
+
+def _heading_2(content: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {"rich_text": _rich_text(content)},
+    }
+
+
+def _table_row(values: list[str]) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "table_row",
+        "table_row": {"cells": [_rich_text(v) for v in values]},
+    }
+
+
+def _exercises_table(exercises: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [_table_row(list(TABLE_HEADERS))]
+    for ex in exercises:
+        if not isinstance(ex, dict):
+            continue
+        name = str(ex.get("name") or "")
+        notes = str(ex.get("notes") or "")
+        rows.append(_table_row([name, _format_target(ex), "", "", "", notes]))
+    return {
+        "object": "block",
+        "type": "table",
+        "table": {
+            "table_width": len(TABLE_HEADERS),
+            "has_column_header": True,
+            "has_row_header": False,
+            "children": rows,
+        },
+    }
+
+
+def _build_session_children(session_dict: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    description = str(session_dict.get("description") or "")
+    if description:
+        blocks.append(_paragraph(description))
+
+    exercises = session_dict.get("exercises")
+    if isinstance(exercises, list) and exercises:
+        blocks.append(_heading_2("Exercises"))
+        blocks.append(_exercises_table(exercises))
+
+    blocks.append(_heading_2("Comments"))
+    blocks.append(_paragraph(""))
+    return blocks
 
 
 def _current_plan(session: Session) -> WeeklyPlan | None:
@@ -113,9 +198,11 @@ def mirror_plan(session: Session, client: NotionClient, database_id: str) -> dic
         if not isinstance(session_dict, dict):
             continue
         properties = _build_session_properties(plan.week_of, session_dict)
+        children = _build_session_children(session_dict)
         client.create_page(
             parent={"database_id": database_id},
             properties=properties,
+            children=children,
         )
         created += 1
 

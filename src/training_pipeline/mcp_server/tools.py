@@ -702,6 +702,35 @@ def log_session(
         return _log_session(session, activity_id, rpe, pain_score, notes, tags)
 
 
+def _validate_exercises(session_index: int, raw: Any) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        raise ValueError(f"session[{session_index}].exercises must be a list")
+    for ex_index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"session[{session_index}].exercises[{ex_index}] must be a dict")
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"session[{session_index}].exercises[{ex_index}].name must be a non-empty string"
+            )
+        if "sets" in item and not isinstance(item["sets"], int):
+            raise ValueError(f"session[{session_index}].exercises[{ex_index}].sets must be an int")
+        if "reps" in item and not isinstance(item["reps"], int | str):
+            raise ValueError(
+                f"session[{session_index}].exercises[{ex_index}].reps must be int or str"
+            )
+        if "weight_kg" in item and not isinstance(item["weight_kg"], int | float):
+            raise ValueError(
+                f"session[{session_index}].exercises[{ex_index}].weight_kg must be a number"
+            )
+        if "notes" in item and not isinstance(item["notes"], str):
+            raise ValueError(
+                f"session[{session_index}].exercises[{ex_index}].notes must be a string"
+            )
+
+
 def _save_weekly_plan(
     session: Session,
     week_of: date_type,
@@ -710,6 +739,8 @@ def _save_weekly_plan(
 ) -> dict[str, Any]:
     if not isinstance(plan, list) or not all(isinstance(item, dict) for item in plan):
         raise ValueError("plan must be a list of dicts")
+    for idx, item in enumerate(plan):
+        _validate_exercises(idx, item.get("exercises"))
 
     previous = list(
         session.scalars(

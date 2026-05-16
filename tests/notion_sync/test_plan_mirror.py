@@ -133,3 +133,85 @@ def test_non_dict_session_items_are_skipped() -> None:
 
     result = plan_mirror.mirror_plan(session, client, "db-plan")
     assert result["created"] == 1
+
+
+def test_session_without_exercises_has_no_table_but_has_comments() -> None:
+    plan = _plan(
+        date(2026, 5, 11),
+        [
+            {
+                "date": "2026-05-12",
+                "session_type": "cycling",
+                "description": "easy spin",
+                "duration_min": 45,
+            }
+        ],
+    )
+    session = FakeSession(plan)
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    plan_mirror.mirror_plan(session, client, "db-plan")
+    children = client.create_page.call_args.kwargs["children"]
+    types = [block["type"] for block in children]
+    assert "table" not in types
+    assert types[0] == "paragraph"
+    assert children[0]["paragraph"]["rich_text"][0]["text"]["content"] == "easy spin"
+    # Comments heading + empty paragraph at the end.
+    assert types[-2] == "heading_2"
+    assert children[-2]["heading_2"]["rich_text"][0]["text"]["content"] == "Comments"
+    assert types[-1] == "paragraph"
+    assert children[-1]["paragraph"]["rich_text"] == []
+
+
+def test_session_with_exercises_emits_table_block() -> None:
+    plan = _plan(
+        date(2026, 5, 11),
+        [
+            {
+                "date": "2026-05-14",
+                "session_type": "lifting",
+                "description": "lower body",
+                "duration_min": 60,
+                "exercises": [
+                    {"name": "Squat", "sets": 5, "reps": 5, "weight_kg": 100.0},
+                    {"name": "RDL", "sets": 3, "reps": "8-10", "weight_kg": 80, "notes": "slow"},
+                    {"name": "Calf raise"},
+                ],
+            }
+        ],
+    )
+    session = FakeSession(plan)
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    plan_mirror.mirror_plan(session, client, "db-plan")
+    children = client.create_page.call_args.kwargs["children"]
+    table_blocks = [b for b in children if b["type"] == "table"]
+    assert len(table_blocks) == 1
+    table = table_blocks[0]["table"]
+    assert table["table_width"] == 6
+    assert table["has_column_header"] is True
+
+    rows = table["children"]
+    # header + 3 exercise rows
+    assert len(rows) == 4
+    header_cells = [cell[0]["text"]["content"] for cell in rows[0]["table_row"]["cells"]]
+    assert header_cells == ["Exercise", "Target", "Done reps", "Kg", "RPE", "Notes"]
+
+    squat_cells = rows[1]["table_row"]["cells"]
+    assert squat_cells[0][0]["text"]["content"] == "Squat"
+    assert squat_cells[1][0]["text"]["content"] == "5×5 @100kg"
+    # Done reps / Kg / RPE empty
+    assert squat_cells[2] == []
+    assert squat_cells[3] == []
+    assert squat_cells[4] == []
+
+    rdl_cells = rows[2]["table_row"]["cells"]
+    assert rdl_cells[1][0]["text"]["content"] == "3×8-10 @80kg"
+    assert rdl_cells[5][0]["text"]["content"] == "slow"
+
+    bare_cells = rows[3]["table_row"]["cells"]
+    assert bare_cells[0][0]["text"]["content"] == "Calf raise"
+    # No sets/reps/weight: target column empty.
+    assert bare_cells[1] == []
