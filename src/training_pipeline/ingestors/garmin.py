@@ -39,12 +39,16 @@ GARMIN_ONLY_ACTIVITY_FIELDS: tuple[str, ...] = (
     "avg_ground_contact_time_ms",
 )
 
-# Device-measurement columns where Garmin is the source of truth whenever it
-# recorded the activity. Strava receives the same .fit file but re-processes
-# it (no auto-pause for indoor rides, lower-HR pause samples folded into the
-# average, etc.), producing values that distort training intensity. When both
-# sources cover the same session, Garmin's numbers win.
+# Columns where Garmin is the source of truth whenever it recorded the
+# activity. Most are device measurements — Strava receives the same .fit
+# file but re-processes it (no auto-pause for indoor rides, lower-HR pause
+# samples folded into the average, etc.), producing values that distort
+# training intensity. ``name`` is also Garmin-priority because activities
+# are deliberately named on the watch ("Sykkeløkt (3)") whereas Strava
+# auto-generates generic labels ("Afternoon Ride"). When both sources cover
+# the same session, Garmin's value wins for these fields.
 GARMIN_PRIORITY_FIELDS: tuple[str, ...] = (
+    "name",
     "duration_seconds",
     "avg_hr",
     "max_hr",

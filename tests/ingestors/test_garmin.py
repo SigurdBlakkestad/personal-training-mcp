@@ -239,6 +239,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
         "source": "garmin",
         "source_id": "g42",
         "start_time": start_time,
+        "name": "Sykkeløkt (3)",
         "duration_seconds": 4859,
         "avg_hr": 120,
         "max_hr": 146,
@@ -267,6 +268,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
     strava_row.garmin_supplement = None
     # Strava-priority fields start with Strava's (less accurate) values; the
     # merge should overwrite them with Garmin's.
+    strava_row.name = "Afternoon Ride"
     strava_row.duration_seconds = 5132
     strava_row.avg_hr = 118
     strava_row.max_hr = 146
@@ -295,7 +297,8 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
     assert merged is True
     assert strava_row.raw == {"id": 99}  # untouched
     assert strava_row.garmin_supplement == garmin_mapped["raw"]
-    # Garmin device measurements win
+    # Garmin device measurements and the user-set name win
+    assert strava_row.name == "Sykkeløkt (3)"
     assert strava_row.duration_seconds == 4859
     assert strava_row.avg_hr == 120
     assert strava_row.distance_meters == 25874.6
@@ -316,13 +319,14 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
 
 
 def test_merge_into_strava_skips_garmin_priority_fields_when_null_in_payload() -> None:
-    """If Garmin's payload doesn't carry a measurement (e.g. no power meter),
-    keep Strava's value rather than nulling it out."""
+    """If Garmin's payload doesn't carry a measurement (e.g. no power meter,
+    no user-set name), keep Strava's value rather than nulling it out."""
     ingestor = GarminIngestor(client=MagicMock())
     garmin_mapped = {
         "source": "garmin",
         "source_id": "g42",
         "start_time": datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        "name": None,  # Garmin auto-recorded session with no user label
         "duration_seconds": 4859,
         "avg_hr": 120,
         # power fields intentionally absent from the dict
@@ -330,6 +334,7 @@ def test_merge_into_strava_skips_garmin_priority_fields_when_null_in_payload() -
     }
     strava_row = MagicMock()
     strava_row.raw = {"id": 99}
+    strava_row.name = "Afternoon Ride"  # Strava's auto name should stick
     strava_row.duration_seconds = 5132
     strava_row.avg_hr = 118
     strava_row.avg_power = 200  # pre-existing Strava value should stick
@@ -357,6 +362,7 @@ def test_merge_into_strava_skips_garmin_priority_fields_when_null_in_payload() -
 
     ingestor._merge_into_strava_if_exists(session, garmin_mapped, MagicMock())
 
+    assert strava_row.name == "Afternoon Ride"  # Garmin had no value → keep Strava's
     assert strava_row.duration_seconds == 4859  # Garmin wins
     assert strava_row.avg_hr == 120  # Garmin wins
     assert strava_row.avg_power == 200  # Garmin had no value → keep Strava's

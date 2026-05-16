@@ -370,7 +370,7 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
         "source_id": "s99",
         "start_time": start_time,
         "sport_type": "cycling",
-        "name": "Morning ride",
+        "name": "Afternoon Ride",
         "duration_seconds": 5132,
         "avg_hr": 118,
         "max_hr": 146,
@@ -380,7 +380,8 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
     }
     garmin_row = MagicMock()
     garmin_row.raw = {"activityId": 42, "trainingEffectLabel": "TEMPO"}
-    # Garmin device measurements that must survive the consume
+    # Garmin-set name and device measurements that must survive the consume
+    garmin_row.name = "Sykkeløkt (3)"
     garmin_row.duration_seconds = 4859
     garmin_row.avg_hr = 120
     garmin_row.max_hr = 146
@@ -402,7 +403,8 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
     assert consumed is True
     assert garmin_row.source == "strava"
     assert garmin_row.source_id == "s99"
-    assert garmin_row.name == "Morning ride"
+    # Garmin-set name survives — Strava's auto-generated label is discarded
+    assert garmin_row.name == "Sykkeløkt (3)"
     # Garmin device measurements win, even though Strava's mapped dict had values
     assert garmin_row.duration_seconds == 4859
     assert garmin_row.avg_hr == 120
@@ -421,12 +423,14 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
 
 def test_consume_garmin_row_lets_strava_fill_null_priority_fields() -> None:
     """When Garmin didn't record a particular measurement (column is None on
-    the existing row), Strava's value should fill it in."""
+    the existing row), Strava's value should fill it in. Also covers the
+    common case where Garmin has no user-set name."""
     ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
     mapped = {
         "source": "strava",
         "source_id": "s99",
         "start_time": datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        "name": "Afternoon Ride",
         "duration_seconds": 5132,
         "avg_hr": 118,
         "avg_power": 112,  # Strava has power; Garmin didn't record it
@@ -434,6 +438,7 @@ def test_consume_garmin_row_lets_strava_fill_null_priority_fields() -> None:
     }
     garmin_row = MagicMock()
     garmin_row.raw = {"activityId": 42}
+    garmin_row.name = None  # no user label on the device
     garmin_row.duration_seconds = 4859
     garmin_row.avg_hr = 120
     garmin_row.avg_power = None  # no power meter on this ride
@@ -453,6 +458,7 @@ def test_consume_garmin_row_lets_strava_fill_null_priority_fields() -> None:
 
     consumed = ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock())
     assert consumed is True
+    assert garmin_row.name == "Afternoon Ride"  # Garmin was None → Strava fills in
     assert garmin_row.duration_seconds == 4859  # Garmin wins
     assert garmin_row.avg_hr == 120  # Garmin wins
     assert garmin_row.avg_power == 112  # Garmin was None → Strava fills in
