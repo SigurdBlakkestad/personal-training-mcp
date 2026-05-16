@@ -20,19 +20,44 @@ def _plan(week_of: date, sessions: list[dict[str, Any]]) -> WeeklyPlan:
     return p
 
 
+class _ScalarsResult:
+    def __init__(self, items: list[Any]) -> None:
+        self._items = items
+
+    def __iter__(self) -> Any:
+        return iter(self._items)
+
+
 class FakeSession:
-    def __init__(self, plan: WeeklyPlan | None) -> None:
-        self._plan = plan
+    """Routes ``scalar`` and ``scalars`` to a single plan or a plan list.
+
+    Pass one plan to behave like the legacy per-week lookup (``scalar``); pass
+    a list to mock the new ``_current_plans`` iteration (``scalars``).
+    """
+
+    def __init__(self, plans: WeeklyPlan | list[WeeklyPlan] | None) -> None:
+        if plans is None:
+            self._plan = None
+            self._plans: list[WeeklyPlan] = []
+        elif isinstance(plans, list):
+            self._plan = plans[0] if plans else None
+            self._plans = plans
+        else:
+            self._plan = plans
+            self._plans = [plans]
 
     def scalar(self, stmt: Any) -> Any:
         return self._plan
+
+    def scalars(self, stmt: Any) -> _ScalarsResult:
+        return _ScalarsResult(self._plans)
 
 
 def test_no_current_plan_is_a_noop() -> None:
     session = FakeSession(None)
     client = MagicMock()
     result = plan_mirror.mirror_plan(session, client, "db-plan")
-    assert result == {"sessions": 0, "archived": 0, "created": 0}
+    assert result == {"weeks": 0, "sessions": 0, "archived": 0, "created": 0}
     client.query_database.assert_not_called()
     client.create_page.assert_not_called()
 
@@ -66,7 +91,7 @@ def test_mirror_archives_previous_and_creates_new() -> None:
 
     result = plan_mirror.mirror_plan(session, client, "db-plan")
 
-    assert result == {"sessions": 2, "archived": 2, "created": 2}
+    assert result == {"weeks": 1, "sessions": 2, "archived": 2, "created": 2}
     assert client.update_page.call_count == 2
     for call in client.update_page.call_args_list:
         assert call.kwargs == {"archived": True}
@@ -77,6 +102,45 @@ def test_mirror_archives_previous_and_creates_new() -> None:
     assert first_props["Status"]["select"]["name"] == "Planned"
     assert first_props["Intensity"]["select"]["name"] == "Easy"
     assert first_props["Duration (min)"] == {"number": 45.0}
+
+
+def test_mirror_iterates_all_is_current_plans_when_week_not_specified() -> None:
+    week1 = _plan(
+        date(2026, 5, 11),
+        [{"date": "2026-05-12", "session_type": "cycling", "duration_min": 45}],
+    )
+    week2 = _plan(
+        date(2026, 5, 18),
+        [
+            {"date": "2026-05-19", "session_type": "lifting", "duration_min": 60},
+            {"date": "2026-05-21", "session_type": "cycling", "duration_min": 90},
+        ],
+    )
+    session = FakeSession([week1, week2])
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    result = plan_mirror.mirror_plan(session, client, "db-plan")
+
+    assert result == {"weeks": 2, "sessions": 3, "archived": 0, "created": 3}
+    # Each week's date-range filter must be queried independently.
+    week_starts = [
+        call.kwargs["filter"]["and"][1]["date"]["on_or_after"]
+        for call in client.query_database.call_args_list
+    ]
+    assert week_starts == ["2026-05-11", "2026-05-18"]
+
+
+def test_mirror_restricted_to_single_week_when_week_of_given() -> None:
+    target = _plan(date(2026, 5, 18), [{"date": "2026-05-19", "session_type": "lifting"}])
+    session = FakeSession(target)
+    client = MagicMock()
+    client.query_database.return_value = []
+
+    result = plan_mirror.mirror_plan(session, client, "db-plan", week_of=date(2026, 5, 18))
+    assert result == {"weeks": 1, "sessions": 1, "archived": 0, "created": 1}
+    # Only the target week's range is queried.
+    assert client.query_database.call_count == 1
 
 
 def test_mirror_filters_by_week_date_range() -> None:
@@ -133,6 +197,7 @@ def test_non_dict_session_items_are_skipped() -> None:
 
     result = plan_mirror.mirror_plan(session, client, "db-plan")
     assert result["created"] == 1
+    assert result["weeks"] == 1
 
 
 def test_session_without_exercises_has_no_table_but_has_comments() -> None:

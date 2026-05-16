@@ -734,8 +734,14 @@ def _validate_exercises(session_index: int, raw: Any) -> None:
             )
 
 
-def _mirror_plan_to_notion(session: Session) -> tuple[bool, str | None]:
-    """Push the current weekly plan to Notion inline. Returns (mirrored, reason).
+def _mirror_plan_to_notion(
+    session: Session, *, week_of: date_type | None = None
+) -> tuple[bool, str | None]:
+    """Push current weekly plan(s) to Notion inline. Returns (mirrored, reason).
+
+    When ``week_of`` is set, only that week is mirrored (used during a save so
+    we don't churn other weeks' Notion pages). When omitted, all is_current
+    plans are mirrored (used by the explicit ``sync_plan_to_notion`` tool).
 
     Reason is non-None when the mirror was skipped (config missing) or failed.
     Errors are caught so a Notion outage never rolls back the Postgres write —
@@ -748,7 +754,7 @@ def _mirror_plan_to_notion(session: Session) -> tuple[bool, str | None]:
         return False, "notion_db_plan_id_missing"
     try:
         client = NotionClient(settings.NOTION_TOKEN)
-        result = mirror_plan(session, client, settings.NOTION_DB_PLAN_ID)
+        result = mirror_plan(session, client, settings.NOTION_DB_PLAN_ID, week_of=week_of)
         logger.info("mcp.notion_mirror.success", **result)
         return True, None
     except Exception as exc:  # noqa: BLE001 -- never roll back the Postgres save
@@ -812,7 +818,7 @@ def _save_weekly_plan(
     if prior_plan_content == plan:
         notion_skipped_reason = "unchanged_from_prior_version"
     else:
-        notion_mirrored, notion_skipped_reason = _mirror_plan_to_notion(session)
+        notion_mirrored, notion_skipped_reason = _mirror_plan_to_notion(session, week_of=week_of)
 
     return {
         "id": str(new_plan.id),

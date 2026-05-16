@@ -558,8 +558,8 @@ def test_save_weekly_plan_mirrors_to_notion_when_content_changed(
 
     calls: list[Any] = []
 
-    def fake_mirror(s: Any) -> tuple[bool, str | None]:
-        calls.append(s)
+    def fake_mirror(s: Any, *, week_of: Any = None) -> tuple[bool, str | None]:
+        calls.append((s, week_of))
         return True, None
 
     monkeypatch.setattr(tools, "_mirror_plan_to_notion", fake_mirror)
@@ -571,7 +571,8 @@ def test_save_weekly_plan_mirrors_to_notion_when_content_changed(
         notes="",
     )
 
-    assert calls == [session]
+    # The mirror runs with the exact week being saved, not "all current plans".
+    assert calls == [(session, week)]
     assert result["notion_mirrored"] is True
     assert result["notion_skipped_reason"] is None
 
@@ -594,8 +595,8 @@ def test_save_weekly_plan_skips_mirror_when_content_unchanged(
 
     calls: list[Any] = []
 
-    def fake_mirror(s: Any) -> tuple[bool, str | None]:
-        calls.append(s)
+    def fake_mirror(s: Any, *, week_of: Any = None) -> tuple[bool, str | None]:
+        calls.append((s, week_of))
         return True, None
 
     monkeypatch.setattr(tools, "_mirror_plan_to_notion", fake_mirror)
@@ -621,7 +622,7 @@ def test_save_weekly_plan_save_still_succeeds_when_mirror_fails(
     session.dispatch = lambda stmt: []
     session.scalar_dispatch = lambda stmt: 0
 
-    def fake_mirror(s: Any) -> tuple[bool, str | None]:
+    def fake_mirror(s: Any, *, week_of: Any = None) -> tuple[bool, str | None]:
         return False, "notion_error:HTTPResponseError"
 
     monkeypatch.setattr(tools, "_mirror_plan_to_notion", fake_mirror)

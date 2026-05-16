@@ -151,11 +151,29 @@ def _build_session_children(session_dict: dict[str, Any]) -> list[dict[str, Any]
     return blocks
 
 
-def _current_plan(session: Session) -> WeeklyPlan | None:
+def _current_plans(session: Session) -> list[WeeklyPlan]:
+    """Return every weekly plan marked is_current=True, ordered by week.
+
+    The schema lets multiple weeks each carry an is_current=True row (one per
+    week). Mirroring "the" current plan is a misnomer — every flagged week
+    needs to land in Notion, otherwise saving a plan for week N+1 silently
+    hides week N from the mirror.
+    """
+    return list(
+        session.scalars(
+            select(WeeklyPlan)
+            .where(WeeklyPlan.is_current.is_(True))
+            .order_by(WeeklyPlan.week_of, desc(WeeklyPlan.version))
+        )
+    )
+
+
+def _current_plan_for_week(session: Session, week_of: date_type) -> WeeklyPlan | None:
     return session.scalar(
         select(WeeklyPlan)
+        .where(WeeklyPlan.week_of == week_of)
         .where(WeeklyPlan.is_current.is_(True))
-        .order_by(desc(WeeklyPlan.week_of), desc(WeeklyPlan.version))
+        .order_by(desc(WeeklyPlan.version))
         .limit(1)
     )
 
@@ -178,12 +196,9 @@ def _previous_planned_pages(
     )
 
 
-def mirror_plan(session: Session, client: NotionClient, database_id: str) -> dict[str, int]:
-    plan = _current_plan(session)
-    if plan is None:
-        logger.info("notion.mirror.plan.no_current_plan")
-        return {"sessions": 0, "archived": 0, "created": 0}
-
+def _mirror_one_plan(
+    plan: WeeklyPlan, client: NotionClient, database_id: str
+) -> tuple[int, int, int]:
     sessions = plan.plan if isinstance(plan.plan, list) else []
     previous = _previous_planned_pages(client, database_id, plan.week_of)
     archived = 0
@@ -192,7 +207,6 @@ def mirror_plan(session: Session, client: NotionClient, database_id: str) -> dic
         if isinstance(page_id, str):
             client.update_page(page_id, archived=True)
             archived += 1
-
     created = 0
     for session_dict in sessions:
         if not isinstance(session_dict, dict):
@@ -205,13 +219,61 @@ def mirror_plan(session: Session, client: NotionClient, database_id: str) -> dic
             children=children,
         )
         created += 1
-
     logger.info(
-        "notion.mirror.plan",
+        "notion.mirror.plan.week",
         week_of=plan.week_of.isoformat(),
         version=plan.version,
         sessions=len(sessions),
         archived=archived,
         created=created,
     )
-    return {"sessions": len(sessions), "archived": archived, "created": created}
+    return len(sessions), archived, created
+
+
+def mirror_plan(
+    session: Session,
+    client: NotionClient,
+    database_id: str,
+    *,
+    week_of: date_type | None = None,
+) -> dict[str, int]:
+    """Push current weekly plan(s) into Notion.
+
+    When ``week_of`` is given, only that week is mirrored — used by the MCP
+    ``save_weekly_plan`` tool so saving one week doesn't churn other weeks'
+    Notion pages (which would archive any in-progress logging there). When
+    omitted, every is_current=True plan is mirrored — used by the scheduled
+    workflow so all active weeks land in Notion.
+    """
+    if week_of is not None:
+        plan = _current_plan_for_week(session, week_of)
+        plans = [plan] if plan is not None else []
+    else:
+        plans = _current_plans(session)
+
+    if not plans:
+        logger.info("notion.mirror.plan.no_current_plan")
+        return {"weeks": 0, "sessions": 0, "archived": 0, "created": 0}
+
+    total_sessions = 0
+    total_archived = 0
+    total_created = 0
+    for plan in plans:
+        sessions, archived, created = _mirror_one_plan(plan, client, database_id)
+        total_sessions += sessions
+        total_archived += archived
+        total_created += created
+
+    logger.info(
+        "notion.mirror.plan",
+        weeks=len(plans),
+        sessions=total_sessions,
+        archived=total_archived,
+        created=total_created,
+    )
+    return {
+        "weeks": len(plans),
+        "sessions": total_sessions,
+        "archived": total_archived,
+        "created": total_created,
+    }
