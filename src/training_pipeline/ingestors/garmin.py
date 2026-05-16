@@ -26,8 +26,7 @@ STRAVA_DEDUPE_WINDOW_SECONDS = 60
 
 # Columns Garmin alone provides — when a Garmin activity merges into an
 # existing Strava row, copy these onto the Strava row so the rich data is not
-# trapped inside ``raw.garmin_supplement``. avg_hr/max_hr/calories etc. are
-# excluded because Strava already populates them.
+# trapped inside ``garmin_supplement``.
 GARMIN_ONLY_ACTIVITY_FIELDS: tuple[str, ...] = (
     "aerobic_training_effect",
     "anaerobic_training_effect",
@@ -38,6 +37,24 @@ GARMIN_ONLY_ACTIVITY_FIELDS: tuple[str, ...] = (
     "min_hr",
     "avg_stride_length_cm",
     "avg_ground_contact_time_ms",
+)
+
+# Device-measurement columns where Garmin is the source of truth whenever it
+# recorded the activity. Strava receives the same .fit file but re-processes
+# it (no auto-pause for indoor rides, lower-HR pause samples folded into the
+# average, etc.), producing values that distort training intensity. When both
+# sources cover the same session, Garmin's numbers win.
+GARMIN_PRIORITY_FIELDS: tuple[str, ...] = (
+    "duration_seconds",
+    "avg_hr",
+    "max_hr",
+    "distance_meters",
+    "elevation_gain_meters",
+    "avg_power",
+    "max_power",
+    "normalized_power",
+    "avg_cadence",
+    "calories",
 )
 
 SPORT_TYPE_MAP: dict[str, str] = {
@@ -375,6 +392,10 @@ class GarminIngestor(IngestorBase):
         if strava is None:
             return False
         strava.garmin_supplement = garmin_mapped["raw"]
+        for field in GARMIN_PRIORITY_FIELDS:
+            value = garmin_mapped.get(field)
+            if value is not None:
+                setattr(strava, field, value)
         for field in GARMIN_ONLY_ACTIVITY_FIELDS:
             value = garmin_mapped.get(field)
             if value is not None and getattr(strava, field, None) is None:

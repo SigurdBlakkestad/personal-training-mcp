@@ -371,11 +371,26 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
         "start_time": start_time,
         "sport_type": "cycling",
         "name": "Morning ride",
-        "avg_hr": 145,
+        "duration_seconds": 5132,
+        "avg_hr": 118,
+        "max_hr": 146,
+        "distance_meters": 25871.0,
+        "avg_power": 112,
         "raw": {"id": 99, "elapsed_time": 3600},
     }
     garmin_row = MagicMock()
     garmin_row.raw = {"activityId": 42, "trainingEffectLabel": "TEMPO"}
+    # Garmin device measurements that must survive the consume
+    garmin_row.duration_seconds = 4859
+    garmin_row.avg_hr = 120
+    garmin_row.max_hr = 146
+    garmin_row.distance_meters = 25874.6
+    garmin_row.avg_power = 120
+    garmin_row.elevation_gain_meters = None
+    garmin_row.max_power = None
+    garmin_row.normalized_power = None
+    garmin_row.avg_cadence = None
+    garmin_row.calories = None
     garmin_row.aerobic_training_effect = 3.4
     garmin_row.min_hr = 92
 
@@ -388,7 +403,11 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
     assert garmin_row.source == "strava"
     assert garmin_row.source_id == "s99"
     assert garmin_row.name == "Morning ride"
-    assert garmin_row.avg_hr == 145
+    # Garmin device measurements win, even though Strava's mapped dict had values
+    assert garmin_row.duration_seconds == 4859
+    assert garmin_row.avg_hr == 120
+    assert garmin_row.distance_meters == 25874.6
+    assert garmin_row.avg_power == 120
     # Garmin-only columns survive — Strava's mapped dict doesn't include them
     assert garmin_row.aerobic_training_effect == 3.4
     assert garmin_row.min_hr == 92
@@ -398,6 +417,45 @@ def test_consume_garmin_row_repurposes_existing_row() -> None:
         "activityId": 42,
         "trainingEffectLabel": "TEMPO",
     }
+
+
+def test_consume_garmin_row_lets_strava_fill_null_priority_fields() -> None:
+    """When Garmin didn't record a particular measurement (column is None on
+    the existing row), Strava's value should fill it in."""
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    mapped = {
+        "source": "strava",
+        "source_id": "s99",
+        "start_time": datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        "duration_seconds": 5132,
+        "avg_hr": 118,
+        "avg_power": 112,  # Strava has power; Garmin didn't record it
+        "raw": {"id": 99},
+    }
+    garmin_row = MagicMock()
+    garmin_row.raw = {"activityId": 42}
+    garmin_row.duration_seconds = 4859
+    garmin_row.avg_hr = 120
+    garmin_row.avg_power = None  # no power meter on this ride
+    for field in (
+        "max_hr",
+        "distance_meters",
+        "elevation_gain_meters",
+        "max_power",
+        "normalized_power",
+        "avg_cadence",
+        "calories",
+    ):
+        setattr(garmin_row, field, None)
+
+    session = MagicMock(spec=Session)
+    session.scalar.side_effect = [garmin_row, None]
+
+    consumed = ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock())
+    assert consumed is True
+    assert garmin_row.duration_seconds == 4859  # Garmin wins
+    assert garmin_row.avg_hr == 120  # Garmin wins
+    assert garmin_row.avg_power == 112  # Garmin was None → Strava fills in
 
 
 def test_consume_garmin_row_skipped_when_no_match() -> None:

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from structlog.stdlib import BoundLogger
 
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
+from training_pipeline.ingestors.garmin import GARMIN_PRIORITY_FIELDS
 from training_pipeline.ingestors.http import HttpClient
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.logging import get_logger
@@ -249,8 +250,19 @@ class StravaIngestor(IngestorBase):
         if conflict is not None:
             return False
         old_garmin_raw = dict(garmin.raw or {})
+        # Garmin's device measurements (HR, power, auto-paused duration, ...)
+        # are more accurate than Strava's re-processed versions. Preserve them
+        # across the consume so the row keeps Garmin's intensity numbers even
+        # though its source/source_id flip to Strava.
+        preserved = {
+            field: getattr(garmin, field)
+            for field in GARMIN_PRIORITY_FIELDS
+            if getattr(garmin, field, None) is not None
+        }
         for key, value in mapped.items():
             setattr(garmin, key, value)
+        for field, value in preserved.items():
+            setattr(garmin, field, value)
         garmin.garmin_supplement = old_garmin_raw
         garmin.updated_at = datetime.now(UTC)
         log.info(
