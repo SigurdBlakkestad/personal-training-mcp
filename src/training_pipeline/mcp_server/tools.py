@@ -15,6 +15,9 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from training_pipeline.notion_sync.client import NotionClient
+from training_pipeline.notion_sync.plan_mirror import mirror_plan
+from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
@@ -731,6 +734,32 @@ def _validate_exercises(session_index: int, raw: Any) -> None:
             )
 
 
+def _mirror_plan_to_notion(session: Session) -> tuple[bool, str | None]:
+    """Push the current weekly plan to Notion inline. Returns (mirrored, reason).
+
+    Reason is non-None when the mirror was skipped (config missing) or failed.
+    Errors are caught so a Notion outage never rolls back the Postgres write —
+    Notion is a mirror, not the source of truth.
+    """
+    settings = get_settings()
+    if not settings.NOTION_TOKEN:
+        return False, "notion_token_missing"
+    if not settings.NOTION_DB_PLAN_ID:
+        return False, "notion_db_plan_id_missing"
+    try:
+        client = NotionClient(settings.NOTION_TOKEN)
+        result = mirror_plan(session, client, settings.NOTION_DB_PLAN_ID)
+        logger.info("mcp.notion_mirror.success", **result)
+        return True, None
+    except Exception as exc:  # noqa: BLE001 -- never roll back the Postgres save
+        logger.warning(
+            "mcp.notion_mirror.failed",
+            error=str(exc),
+            error_type=exc.__class__.__name__,
+        )
+        return False, f"notion_error:{exc.__class__.__name__}"
+
+
 def _save_weekly_plan(
     session: Session,
     week_of: date_type,
@@ -749,6 +778,7 @@ def _save_weekly_plan(
             .where(WeeklyPlan.is_current.is_(True))
         )
     )
+    prior_plan_content = previous[0].plan if previous else None
     for row in previous:
         row.is_current = False
 
@@ -773,6 +803,17 @@ def _save_weekly_plan(
         sessions=len(plan),
         replaced=len(previous),
     )
+
+    notion_mirrored = False
+    notion_skipped_reason: str | None = None
+    # Only mirror when the plan content actually changed. Re-mirroring an
+    # unchanged plan would archive any in-progress logging the athlete did
+    # in the Notion table (done reps / Kg / RPE cells) during the session.
+    if prior_plan_content == plan:
+        notion_skipped_reason = "unchanged_from_prior_version"
+    else:
+        notion_mirrored, notion_skipped_reason = _mirror_plan_to_notion(session)
+
     return {
         "id": str(new_plan.id),
         "week_of": new_plan.week_of.isoformat(),
@@ -780,6 +821,8 @@ def _save_weekly_plan(
         "is_current": new_plan.is_current,
         "sessions": len(plan),
         "replaced_versions": [r.version for r in previous],
+        "notion_mirrored": notion_mirrored,
+        "notion_skipped_reason": notion_skipped_reason,
     }
 
 
@@ -787,6 +830,16 @@ def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") 
     parsed_week = date_type.fromisoformat(week_of)
     with get_session() as session:
         return _save_weekly_plan(session, parsed_week, plan, notes)
+
+
+def _sync_plan_to_notion(session: Session) -> dict[str, Any]:
+    mirrored, reason = _mirror_plan_to_notion(session)
+    return {"notion_mirrored": mirrored, "notion_skipped_reason": reason}
+
+
+def sync_plan_to_notion() -> dict[str, Any]:
+    with get_session() as session:
+        return _sync_plan_to_notion(session)
 
 
 def _update_athlete_context(session: Session, updates: dict[str, Any]) -> dict[str, Any]:

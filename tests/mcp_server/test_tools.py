@@ -541,6 +541,161 @@ def test_save_weekly_plan_supersedes_previous(session: FakeSession) -> None:
     assert any(isinstance(o, WeeklyPlan) for o in session.added)
 
 
+def test_save_weekly_plan_mirrors_to_notion_when_content_changed(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    week = date(2026, 5, 4)
+    previous = WeeklyPlan(
+        week_of=week,
+        version=1,
+        plan=[{"date": "2026-05-05", "session_type": "easy run"}],
+        is_current=True,
+    )
+    previous.id = uuid4()
+    previous.created_at = datetime(2026, 5, 4, 12, 0, tzinfo=UTC)
+    session.dispatch = lambda stmt: [previous]
+    session.scalar_dispatch = lambda stmt: 1
+
+    calls: list[Any] = []
+
+    def fake_mirror(s: Any) -> tuple[bool, str | None]:
+        calls.append(s)
+        return True, None
+
+    monkeypatch.setattr(tools, "_mirror_plan_to_notion", fake_mirror)
+
+    result = tools._save_weekly_plan(
+        session,
+        week_of=week,
+        plan=[{"date": "2026-05-05", "session_type": "hard intervals"}],
+        notes="",
+    )
+
+    assert calls == [session]
+    assert result["notion_mirrored"] is True
+    assert result["notion_skipped_reason"] is None
+
+
+def test_save_weekly_plan_skips_mirror_when_content_unchanged(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    week = date(2026, 5, 4)
+    identical_plan = [{"date": "2026-05-05", "session_type": "easy run"}]
+    previous = WeeklyPlan(
+        week_of=week,
+        version=1,
+        plan=identical_plan,
+        is_current=True,
+    )
+    previous.id = uuid4()
+    previous.created_at = datetime(2026, 5, 4, 12, 0, tzinfo=UTC)
+    session.dispatch = lambda stmt: [previous]
+    session.scalar_dispatch = lambda stmt: 1
+
+    calls: list[Any] = []
+
+    def fake_mirror(s: Any) -> tuple[bool, str | None]:
+        calls.append(s)
+        return True, None
+
+    monkeypatch.setattr(tools, "_mirror_plan_to_notion", fake_mirror)
+
+    result = tools._save_weekly_plan(
+        session,
+        week_of=week,
+        plan=identical_plan,
+        notes="",
+    )
+
+    assert calls == []  # mirror was not invoked
+    assert result["notion_mirrored"] is False
+    assert result["notion_skipped_reason"] == "unchanged_from_prior_version"
+    # Postgres save still happened — version was still bumped.
+    assert result["version"] == 2
+
+
+def test_save_weekly_plan_save_still_succeeds_when_mirror_fails(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    week = date(2026, 5, 4)
+    session.dispatch = lambda stmt: []
+    session.scalar_dispatch = lambda stmt: 0
+
+    def fake_mirror(s: Any) -> tuple[bool, str | None]:
+        return False, "notion_error:HTTPResponseError"
+
+    monkeypatch.setattr(tools, "_mirror_plan_to_notion", fake_mirror)
+
+    result = tools._save_weekly_plan(
+        session,
+        week_of=week,
+        plan=[{"date": "2026-05-05", "session_type": "easy run"}],
+        notes="",
+    )
+
+    # The save itself succeeded; mirror failure surfaces via the result fields.
+    assert any(isinstance(o, WeeklyPlan) for o in session.added)
+    assert result["notion_mirrored"] is False
+    assert result["notion_skipped_reason"] == "notion_error:HTTPResponseError"
+
+
+def test_sync_plan_to_notion_returns_mirror_outcome(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "_mirror_plan_to_notion", lambda s: (True, None))
+    assert tools._sync_plan_to_notion(session) == {
+        "notion_mirrored": True,
+        "notion_skipped_reason": None,
+    }
+    monkeypatch.setattr(tools, "_mirror_plan_to_notion", lambda s: (False, "notion_token_missing"))
+    assert tools._sync_plan_to_notion(session) == {
+        "notion_mirrored": False,
+        "notion_skipped_reason": "notion_token_missing",
+    }
+
+
+def test_mirror_plan_to_notion_skips_when_token_missing(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = MagicMock()
+    settings.NOTION_TOKEN = ""
+    settings.NOTION_DB_PLAN_ID = "db-id"
+    monkeypatch.setattr(tools, "get_settings", lambda: settings)
+    mirrored, reason = tools._mirror_plan_to_notion(session)
+    assert mirrored is False
+    assert reason == "notion_token_missing"
+
+
+def test_mirror_plan_to_notion_skips_when_db_id_missing(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = MagicMock()
+    settings.NOTION_TOKEN = "tok"
+    settings.NOTION_DB_PLAN_ID = ""
+    monkeypatch.setattr(tools, "get_settings", lambda: settings)
+    mirrored, reason = tools._mirror_plan_to_notion(session)
+    assert mirrored is False
+    assert reason == "notion_db_plan_id_missing"
+
+
+def test_mirror_plan_to_notion_swallows_runtime_errors(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = MagicMock()
+    settings.NOTION_TOKEN = "tok"
+    settings.NOTION_DB_PLAN_ID = "db-id"
+    monkeypatch.setattr(tools, "get_settings", lambda: settings)
+    monkeypatch.setattr(tools, "NotionClient", lambda token: MagicMock())
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("notion is down")
+
+    monkeypatch.setattr(tools, "mirror_plan", boom)
+    mirrored, reason = tools._mirror_plan_to_notion(session)
+    assert mirrored is False
+    assert reason == "notion_error:RuntimeError"
+
+
 def test_save_weekly_plan_rejects_non_list(session: FakeSession) -> None:
     with pytest.raises(ValueError, match="list of dicts"):
         tools._save_weekly_plan(

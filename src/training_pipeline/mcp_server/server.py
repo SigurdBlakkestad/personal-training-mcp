@@ -123,6 +123,12 @@ def log_session(
 def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") -> dict[str, Any]:
     """Save a new weekly plan, marking any previous current plan for that week superseded.
 
+    Pushes the plan to Notion inline when its content differs from the prior
+    version, so the new pages appear in the Notion plan database before the
+    tool returns. If the saved plan is byte-identical to the previous version,
+    the mirror is skipped to avoid clobbering any in-progress logging in the
+    Notion exercise tables. Use ``sync_plan_to_notion`` to force a refresh.
+
     REQUIRED before calling this tool when the plan includes any cycling
     session: call ``get_weather_forecast`` for ``week_of`` first and use the
     result to choose indoor vs outdoor for each ride. Prefer indoor (trainer)
@@ -153,6 +159,21 @@ def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") 
        "intensity": "Easy", "time": "12:30"}
     """
     return tools.save_weekly_plan(week_of=week_of, plan=plan, notes=notes)
+
+
+@mcp.tool
+def sync_plan_to_notion() -> dict[str, Any]:
+    """Force a refresh of the current weekly plan into the Notion plan database.
+
+    Use only when ``save_weekly_plan`` reports ``notion_mirrored: false`` or when
+    the Notion pages have drifted from Postgres. Normal saves already mirror
+    automatically when the plan content changes; calling this on an unchanged
+    plan will re-archive Notion pages and wipe any in-progress logging in their
+    exercise tables.
+
+    Returns ``{"notion_mirrored": bool, "notion_skipped_reason": str | None}``.
+    """
+    return tools.sync_plan_to_notion()
 
 
 @mcp.tool
