@@ -83,7 +83,10 @@ def main() -> None:
                 "configuration": {
                     "type": "calendar",
                     "date_property_id": date_id,
-                    "view_range": "month",
+                    # Week range gives each day cell much more vertical space
+                    # than month view — month tiles render as gray dots when
+                    # there is more than the title to display.
+                    "view_range": "week",
                     "show_weekends": True,
                     "properties": [
                         {"property_id": "title", "visible": True},
