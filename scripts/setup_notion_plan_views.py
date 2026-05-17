@@ -1,18 +1,31 @@
-"""Create Calendar + Gallery views on the Notion plan database.
+"""Create Upcoming + Calendar views on the Notion plan database.
 
 The Notion API shipped view creation in version 2025-09-03 (``POST /v1/views``).
 Before that, views were UI-only — which is why every popular Notion workout
-template asks the user to "add a calendar view manually." With the new
-endpoint we can wire the same layouts the popular templates use without any
-clicks in the browser.
+template still asks users to "add a calendar view manually."
+
+Layout this script provisions:
+
+- **Upcoming** (gallery, sort Date asc, filter ``Date >= today``) — the
+  default leftmost view. Designed for mobile: Notion's calendar view on
+  iOS collapses every entry to a gray dot regardless of view range, so a
+  card-style upcoming-sessions list is the only legible layout on phone.
+- **Calendar** (week range, week-by-week visualization) — useful on desktop
+  where calendar tiles have enough vertical space to render content.
+
+Order matters: Upcoming is created first so it stays leftmost (Notion's
+default view is whichever tab is leftmost, and view order in the tab bar
+follows creation order — the API does not expose a reorder/position field).
 
 Idempotent: existing views with matching names are left untouched, so this
-script is safe to re-run after schema or label changes.
+script is safe to re-run after schema or label changes. Re-running also
+refreshes the ``Date >= today`` filter to today's date.
 """
 
 from __future__ import annotations
 
 import os
+from datetime import date
 from typing import Any
 
 import httpx
@@ -30,9 +43,18 @@ def _headers(token: str) -> dict[str, str]:
 
 
 def _existing_views(client: httpx.Client, token: str, db_id: str) -> list[dict[str, Any]]:
+    # The /views?database_id=... list endpoint currently returns name=None for
+    # every view (Notion bug as of 2026-05). Fetching each individually gives
+    # us the real names.
     resp = client.get(f"{NOTION_API}/views", params={"database_id": db_id}, headers=_headers(token))
     resp.raise_for_status()
-    return list(resp.json().get("results", []) or [])
+    views = list(resp.json().get("results", []) or [])
+    detailed: list[dict[str, Any]] = []
+    for v in views:
+        r = client.get(f"{NOTION_API}/views/{v['id']}", headers=_headers(token))
+        if r.status_code == 200:
+            detailed.append(r.json())
+    return detailed
 
 
 def _property_ids(client: httpx.Client, token: str, ds_id: str) -> dict[str, str]:
@@ -52,9 +74,10 @@ def _create_view(client: httpx.Client, token: str, payload: dict[str, Any]) -> d
 def main() -> None:
     token = os.environ["NOTION_TOKEN"]
     db_id = os.environ["NOTION_DB_PLAN_ID"]
+    today = date.today().isoformat()
 
     with httpx.Client(timeout=30) as client:
-        # The new API splits database (container) from data_source (the
+        # The 2025-09-03 API splits database (container) from data_source (the
         # schema/rows). Most plan databases have exactly one data source.
         db_resp = client.get(f"{NOTION_API}/databases/{db_id}", headers=_headers(token))
         db_resp.raise_for_status()
@@ -70,10 +93,51 @@ def main() -> None:
 
         existing = _existing_views(client, token, db_id)
         existing_names = {(v.get("name") or "").lower() for v in existing}
-        print(f"existing views: {sorted(existing_names) or '[unnamed default]'}")
+        print(f"existing views: {sorted(existing_names) or '[none]'}")
 
-        # Calendar view — week-by-week training plan, with key fields visible
-        # on each tile. Workout-template-style layout.
+        # 1) Upcoming gallery view — leftmost = default. Mobile-friendly.
+        # Sort + filter use property name (not property_id) because that is
+        # what Notion's query filter/sort schema accepts.
+        if "upcoming" not in existing_names:
+            upcoming_payload: dict[str, Any] = {
+                "database_id": db_id,
+                "data_source_id": ds_id,
+                "name": "Upcoming",
+                "type": "gallery",
+                "sorts": [{"property": "Date", "direction": "ascending"}],
+                "filter": {
+                    "property": "Date",
+                    "date": {"on_or_after": today},
+                },
+                "configuration": {
+                    "type": "gallery",
+                    # Notion's default when no cover image is set is to show
+                    # the page body as card preview text — workout
+                    # description renders directly on each card.
+                    "card_layout": "list",
+                    "properties": [
+                        {"property_id": "title", "visible": True},
+                        *[
+                            {"property_id": prop_ids[name], "visible": True}
+                            for name in (
+                                "Date",
+                                "Session Type",
+                                "Duration (min)",
+                                "Intensity",
+                                "Status",
+                            )
+                            if name in prop_ids
+                        ],
+                    ],
+                },
+            }
+            result = _create_view(client, token, upcoming_payload)
+            print(f"created Upcoming gallery view: id={result.get('id')}")
+        else:
+            print("Upcoming view already exists — skipped")
+
+        # 2) Calendar view — week range, for desktop use. Created after
+        # Upcoming so the latter stays as the leftmost (default) tab.
         if "calendar" not in existing_names:
             calendar_payload: dict[str, Any] = {
                 "database_id": db_id,
@@ -83,9 +147,10 @@ def main() -> None:
                 "configuration": {
                     "type": "calendar",
                     "date_property_id": date_id,
-                    # Week range gives each day cell much more vertical space
-                    # than month view — month tiles render as gray dots when
-                    # there is more than the title to display.
+                    # Week range gives each day cell enough vertical space
+                    # for the title + properties. Month-range tiles collapse
+                    # to gray dots on mobile and even on desktop when there
+                    # is more than a single short line per entry.
                     "view_range": "week",
                     "show_weekends": True,
                     "properties": [
@@ -102,34 +167,6 @@ def main() -> None:
             print(f"created Calendar view: id={result.get('id')}")
         else:
             print("Calendar view already exists — skipped")
-
-        # Gallery view — card-style "what does the week look like" overview,
-        # matching the layout most public Notion workout-planner templates use.
-        if "gallery" not in existing_names:
-            gallery_payload = {
-                "database_id": db_id,
-                "data_source_id": ds_id,
-                "name": "Gallery",
-                "type": "gallery",
-                "configuration": {
-                    "type": "gallery",
-                    "cover_size": "medium",
-                    "cover_aspect": "cover",
-                    "card_layout": "list",
-                    "properties": [
-                        {"property_id": "title", "visible": True},
-                        *[
-                            {"property_id": prop_ids[name], "visible": True}
-                            for name in ("Date", "Session Type", "Duration (min)", "Intensity")
-                            if name in prop_ids
-                        ],
-                    ],
-                },
-            }
-            result = _create_view(client, token, gallery_payload)
-            print(f"created Gallery view: id={result.get('id')}")
-        else:
-            print("Gallery view already exists — skipped")
 
 
 if __name__ == "__main__":
