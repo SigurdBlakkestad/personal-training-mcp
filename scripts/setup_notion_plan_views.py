@@ -71,6 +71,15 @@ def _create_view(client: httpx.Client, token: str, payload: dict[str, Any]) -> d
     return dict(resp.json())
 
 
+def _patch_view(
+    client: httpx.Client, token: str, view_id: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    resp = client.patch(f"{NOTION_API}/views/{view_id}", headers=_headers(token), json=body)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"patch view {view_id} failed: {resp.status_code} {resp.text}")
+    return dict(resp.json())
+
+
 def main() -> None:
     token = os.environ["NOTION_TOKEN"]
     db_id = os.environ["NOTION_DB_PLAN_ID"]
@@ -92,13 +101,13 @@ def main() -> None:
             raise RuntimeError("plan data source has no Date property to anchor a calendar on")
 
         existing = _existing_views(client, token, db_id)
-        existing_names = {(v.get("name") or "").lower() for v in existing}
-        print(f"existing views: {sorted(existing_names) or '[none]'}")
+        existing_by_name = {(v.get("name") or "").lower(): v for v in existing}
+        print(f"existing views: {sorted(existing_by_name) or '[none]'}")
 
         # 1) Upcoming gallery view — leftmost = default. Mobile-friendly.
         # Sort + filter use property name (not property_id) because that is
         # what Notion's query filter/sort schema accepts.
-        if "upcoming" not in existing_names:
+        if "upcoming" not in existing_by_name:
             upcoming_payload: dict[str, Any] = {
                 "database_id": db_id,
                 "data_source_id": ds_id,
@@ -134,11 +143,27 @@ def main() -> None:
             result = _create_view(client, token, upcoming_payload)
             print(f"created Upcoming gallery view: id={result.get('id')}")
         else:
-            print("Upcoming view already exists — skipped")
+            # PATCH the existing view's filter so today's date is fresh.
+            # Sort never changes; configuration never changes; only filter
+            # needs refreshing. (Full-configuration PATCH is not supported
+            # for gallery/calendar views — only top-level filter and sorts.)
+            view_id = existing_by_name["upcoming"]["id"]
+            _patch_view(
+                client,
+                token,
+                view_id,
+                {
+                    "filter": {
+                        "property": "Date",
+                        "date": {"on_or_after": today},
+                    }
+                },
+            )
+            print(f"refreshed Upcoming view filter to Date >= {today}")
 
         # 2) Calendar view — week range, for desktop use. Created after
         # Upcoming so the latter stays as the leftmost (default) tab.
-        if "calendar" not in existing_names:
+        if "calendar" not in existing_by_name:
             calendar_payload: dict[str, Any] = {
                 "database_id": db_id,
                 "data_source_id": ds_id,

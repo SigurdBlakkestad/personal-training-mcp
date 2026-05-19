@@ -1,0 +1,29 @@
+name: Refresh Notion Views
+
+on:
+  schedule:
+    # 05:30 UTC — runs just before the daily notion_mirror at 06:30 so the
+    # "next upcoming session" view is anchored on today before the morning
+    # mirror reshapes the plan pages.
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install httpx
+        run: pip install "httpx>=0.27"
+
+      - name: Refresh Upcoming view filter to today
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_PLAN_ID: ${{ secrets.NOTION_DB_PLAN_ID }}
+        run: python scripts/setup_notion_plan_views.py
