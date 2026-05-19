@@ -2,6 +2,21 @@
 
 > **Status: archived 2026-05-15.** All 12 steps are committed; the code is in the repo. If you've forked this project and want to *run* it, see `docs/SETUP_MANUAL.md` instead — you don't need to re-execute these steps. This file is kept as a reference for understanding how the project was built, and as a template if you want to extend it (e.g., add a fourth data source) by following the same step pattern.
 
+## Deviations from the original plan
+
+The 12 steps below describe the plan as written. The shipped code diverges from it in a few places that matter if you're following the plan as a template — read these before paste-running a step.
+
+- **Garmin is the source of truth for device fields when both Strava and Garmin cover the same session.** The original plan treated each source as independent. In practice, Strava re-processes the same `.fit` file that Garmin uploads (no auto-pause for indoor rides, different HR-pause handling) and produces values that distort training-load math. The shipped ingestor merges duplicate activities bidirectionally and lets Garmin win for `name`, `duration_seconds`, `distance_meters`, `elevation_gain_meters`, `avg_hr`, `max_hr`, `avg_power`, `max_power`, `normalized_power`, `avg_cadence`, `calories` — see `GARMIN_PRIORITY_FIELDS` in `src/training_pipeline/ingestors/garmin.py`. Strava-only fields (kudos, segments, the activity URL) are preserved. If you skip Garmin (Step 12) entirely, Strava values are used as-is and nothing breaks.
+- **Activity-metric columns are promoted out of `raw`.** Step 3's schema covers the canonical set; the shipped schema additionally exposes `max_power`, normalized power, and a handful of Garmin-specific fields as real columns so the MCP tools can query them without `raw->>` lookups. Migration history in `alembic/versions/` shows the additions.
+- **Notion mirror (Step 10) shipped with extras.** The plan specified weekly-plan + activities + dashboard pages. The shipped version also: (a) programmatically creates a Calendar view (default week range — month tiles collapse to dots on mobile) and a mobile-friendly Upcoming list view (replaces the original Gallery idea); (b) embeds an exercises table inside each plan page for in-workout logging; (c) auto-mirrors from the `save_weekly_plan` MCP tool; (d) refreshes the Upcoming view filter daily via GitHub Actions. See `scripts/setup_notion_plan_views.py` and `.github/workflows/`.
+- **`save_weekly_plan` requires a weather check when the plan contains cycling.** Not in the original Step 9 spec. A `get_weather_forecast` MCP tool was added (defaults to Kongshavn, Arendal) so Claude can decide indoor-vs-outdoor before committing the plan.
+- **Garmin auth (Step 12) is more constrained than the plan suggested.** `mobile+*` login strategies are usually 429-rate-limited (account-scoped, hours-long window). Login succeeds via the `widget+cffi` strategy, but `python-garminconnect` only persists tokens when `client.login(tokenstore=...)` receives a path. Recovery flow is `scripts/garmin_auth.py` → update `GARMINTOKENS_B64` secret. The whole Garmin job runs with `continue-on-error: true` so a Garmin outage doesn't fail the daily sync.
+- **`muscle_mass_kg` is surfaced in `get_daily_summary`.** Small but worth noting — the MCP read tool returns it alongside weight and body-fat trends.
+
+If you're extending this project, add new deviations here as you ship them so the plan stays usable as a template.
+
+---
+
 Staged build plan with paste-ready Claude Code prompts. Each step is independent; `/clear` between steps when noted. Garmin (the fragile dependency) is **last** — the other sources will be working before you touch it.
 
 **Stack:** Python 3.12 · Supabase Postgres · GitHub Actions · MCP Python SDK (FastMCP) · Notion API · Strava API · Withings API · `python-garminconnect` (final phase)

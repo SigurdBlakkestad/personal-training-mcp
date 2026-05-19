@@ -77,7 +77,7 @@ The full stack is overkill if you don't need SQL aggregations or derived trainin
 
 ### Want to see how it was built?
 
-The 12-step Claude Code build plan lives in `docs/archive/BUILD_PLAN.md`, with the wrapper runner prompt in `docs/archive/RUN_STEP_PROMPT.md`. Useful as a template if you want to extend the project (e.g., add a fourth data source) or build something similar from scratch.
+The 12-step Claude Code build plan lives in `docs/archive/BUILD_PLAN.md`, with the wrapper runner prompt in `docs/archive/RUN_STEP_PROMPT.md`. Useful as a template if you want to extend the project (e.g., add a fourth data source) or build something similar from scratch. A "Deviations from the original plan" section at the top of the build plan documents where the shipped code diverges — most notably, Garmin wins over Strava for device-measured fields (HR, power, cadence, name) when both sources cover the same session.
 
 ## Privacy and data ownership
 
