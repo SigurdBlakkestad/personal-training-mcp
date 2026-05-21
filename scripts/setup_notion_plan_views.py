@@ -6,10 +6,14 @@ template still asks users to "add a calendar view manually."
 
 Layout this script provisions:
 
-- **Upcoming** (gallery, sort Date asc, filter ``Date >= today``) — the
-  default leftmost view. Designed for mobile: Notion's calendar view on
+- **Upcoming** (gallery, sort Date asc, filter ``Date >= today - LOOKBACK_DAYS``)
+  — the default leftmost view. Designed for mobile: Notion's calendar view on
   iOS collapses every entry to a gray dot regardless of view range, so a
   card-style upcoming-sessions list is the only legible layout on phone.
+  The small lookback window keeps the last few days visible (e.g. a session
+  that was skipped and moved) instead of dropping everything before today —
+  Notion has no scroll-anchor, so a recently-past session is only reachable
+  if it is inside the view's filter at all.
 - **Calendar** (week range, week-by-week visualization) — useful on desktop
   where calendar tiles have enough vertical space to render content.
 
@@ -19,19 +23,25 @@ follows creation order — the API does not expose a reorder/position field).
 
 Idempotent: existing views with matching names are left untouched, so this
 script is safe to re-run after schema or label changes. Re-running also
-refreshes the ``Date >= today`` filter to today's date.
+refreshes the ``Date >= today - LOOKBACK_DAYS`` filter so the window slides
+forward each day.
 """
 
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
 
 NOTION_VERSION = "2025-09-03"
 NOTION_API = "https://api.notion.com/v1"
+
+# Days of recent past kept in the Upcoming view. Notion filters remove rows
+# entirely (not just visually), so anything older than this is unreachable
+# from Upcoming and must be found in Training Activities instead.
+LOOKBACK_DAYS = 3
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -83,7 +93,7 @@ def _patch_view(
 def main() -> None:
     token = os.environ["NOTION_TOKEN"]
     db_id = os.environ["NOTION_DB_PLAN_ID"]
-    today = date.today().isoformat()
+    window_start = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
 
     with httpx.Client(timeout=30) as client:
         # The 2025-09-03 API splits database (container) from data_source (the
@@ -116,7 +126,7 @@ def main() -> None:
                 "sorts": [{"property": "Date", "direction": "ascending"}],
                 "filter": {
                     "property": "Date",
-                    "date": {"on_or_after": today},
+                    "date": {"on_or_after": window_start},
                 },
                 "configuration": {
                     "type": "gallery",
@@ -143,7 +153,7 @@ def main() -> None:
             result = _create_view(client, token, upcoming_payload)
             print(f"created Upcoming gallery view: id={result.get('id')}")
         else:
-            # PATCH the existing view's filter so today's date is fresh.
+            # PATCH the existing view's filter so the window slides forward.
             # Sort never changes; configuration never changes; only filter
             # needs refreshing. (Full-configuration PATCH is not supported
             # for gallery/calendar views — only top-level filter and sorts.)
@@ -155,11 +165,11 @@ def main() -> None:
                 {
                     "filter": {
                         "property": "Date",
-                        "date": {"on_or_after": today},
+                        "date": {"on_or_after": window_start},
                     }
                 },
             )
-            print(f"refreshed Upcoming view filter to Date >= {today}")
+            print(f"refreshed Upcoming view filter to Date >= {window_start}")
 
         # 2) Calendar view — week range, for desktop use. Created after
         # Upcoming so the latter stays as the leftmost (default) tab.

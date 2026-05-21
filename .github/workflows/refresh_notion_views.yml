@@ -3,8 +3,8 @@ name: Refresh Notion Views
 on:
   schedule:
     # 05:30 UTC — runs just before the daily notion_mirror at 06:30 so the
-    # "next upcoming session" view is anchored on today before the morning
-    # mirror reshapes the plan pages.
+    # Upcoming view's rolling window (last few days + future) slides forward
+    # before the morning mirror reshapes the plan pages.
     - cron: "30 5 * * *"
   workflow_dispatch:
 
