@@ -17,3 +17,11 @@ services:
         value: INFO
       - key: ATHLETE_FTP
         sync: false
+      - key: NOTION_TOKEN
+        sync: false
+      - key: NOTION_DB_PLAN_ID
+        sync: false
+      - key: NOTION_DB_ACTIVITIES_ID
+        sync: false
+      - key: NOTION_DB_METRICS_ID
+        sync: false
