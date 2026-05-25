@@ -28,11 +28,11 @@ def _plan(week_of: date, sessions: list[dict[str, Any]], is_current: bool = True
     return plan
 
 
-def test_fetch_plans_returns_current_and_future_only() -> None:
+def test_fetch_plans_keeps_past_and_caps_future() -> None:
     today = date(2026, 5, 13)  # Wednesday
-    expected_monday = date(2026, 5, 11)
 
-    matching_plan = _plan(expected_monday, [])
+    past_plan = _plan(date(2026, 4, 6), [])
+    current_plan = _plan(date(2026, 5, 11), [])
     future_plan = _plan(date(2026, 5, 18), [])
 
     captured: dict[str, Any] = {}
@@ -40,17 +40,20 @@ def test_fetch_plans_returns_current_and_future_only() -> None:
     def fake_scalars(stmt: Any) -> Any:
         captured["stmt"] = stmt
         result = MagicMock()
-        result.__iter__.return_value = iter([matching_plan, future_plan])
+        result.__iter__.return_value = iter([past_plan, current_plan, future_plan])
         return result
 
     session = MagicMock()
     session.scalars.side_effect = fake_scalars
 
     plans = fetch_plans(session, today=today, weeks_ahead=4)
-    assert plans == [matching_plan, future_plan]
+    assert plans == [past_plan, current_plan, future_plan]
     compiled = str(captured["stmt"])
     assert "weekly_plans" in compiled
     assert "is_current" in compiled
+    # Past weeks are retained: only a future cap, never a lower bound on week_of.
+    assert "weekly_plans.week_of <=" in compiled
+    assert "weekly_plans.week_of >=" not in compiled
 
 
 def test_write_calendar_creates_file_when_missing(tmp_path: Path) -> None:

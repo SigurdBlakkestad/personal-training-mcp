@@ -1,8 +1,10 @@
-"""Generate and write ``docs/training.ics`` from current weekly plans.
+"""Generate and write ``docs/training.ics`` from weekly plans.
 
-The publisher fetches the current weekly plan and up to three following
-weeks (all flagged ``is_current = true``), renders them as a single .ics
-calendar, and writes the result to ``docs/training.ics``. It returns whether
+The publisher fetches every past weekly plan plus the current week and up to
+three following weeks (all flagged ``is_current = true``), renders them as a
+single .ics calendar, and writes the result to ``docs/training.ics``. Past
+weeks are retained so calendars subscribed to the feed keep historical
+sessions instead of deleting them once a week rolls by. It returns whether
 the on-disk file changed so the workflow can decide to commit + push.
 """
 
@@ -54,14 +56,17 @@ def fetch_plans(
     today: date_type | None = None,
     weeks_ahead: int = DEFAULT_WEEKS_AHEAD,
 ) -> list[WeeklyPlan]:
-    """Return current + up to ``weeks_ahead - 1`` future weeks of plans."""
-    start_monday = _current_monday(today)
+    """Return all past plans plus the current and up to ``weeks_ahead - 1`` future weeks.
+
+    Past weeks carry no lower bound so a subscribed calendar keeps historical
+    sessions; only the future is capped, at ``weeks_ahead - 1`` weeks out.
+    """
+    end_monday = _current_monday(today) + timedelta(weeks=weeks_ahead - 1)
     stmt = (
         select(WeeklyPlan)
         .where(WeeklyPlan.is_current.is_(True))
-        .where(WeeklyPlan.week_of >= start_monday)
+        .where(WeeklyPlan.week_of <= end_monday)
         .order_by(WeeklyPlan.week_of.asc())
-        .limit(weeks_ahead)
     )
     return list(session.scalars(stmt))
 
