@@ -1,6 +1,10 @@
 name: Publish Calendar
 
 on:
+  # Standalone backstop so the calendar still refreshes daily even if the
+  # Notion Mirror workflow (the workflow_run trigger below) is ever disabled.
+  schedule:
+    - cron: "45 6 * * *"
   workflow_run:
     workflows: ["Notion Mirror"]
     types: [completed]
