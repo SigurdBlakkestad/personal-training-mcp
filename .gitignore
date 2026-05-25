@@ -94,3 +94,6 @@ garmin_tokens.json
 *.db
 *.sqlite
 *.sqlite3
+
+# Node (not used by this Python project; guards against stray npm installs)
+node_modules/
