@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from training_pipeline.ingestors.http import HttpClient
 from training_pipeline.ingestors.strava import (
+    STRAVA_OVERLAP_MARGIN_HOURS,
     STRAVA_PAGE_SIZE,
     StravaIngestor,
     _normalize_sport,
@@ -490,6 +491,29 @@ def test_consume_garmin_row_skipped_when_strava_already_exists() -> None:
     # garmin row found, then strava row found — conflict
     session.scalar.side_effect = [garmin_row, "existing-strava-uuid"]
     assert ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock()) is False
+
+
+def test_compute_since_subtracts_overlap_margin_from_prior_run() -> None:
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    last_finished = datetime(2026, 6, 7, 8, 18, tzinfo=UTC)
+    session = MagicMock(spec=Session)
+    session.scalar.return_value = last_finished
+
+    since = ingestor._compute_since(session)
+
+    assert since == last_finished - timedelta(hours=STRAVA_OVERLAP_MARGIN_HOURS)
+
+
+def test_compute_since_falls_back_to_default_lookback_without_prior_run() -> None:
+    ingestor = StravaIngestor(http_client=MagicMock(spec=HttpClient))
+    session = MagicMock(spec=Session)
+    session.scalar.return_value = None
+
+    before = datetime.now(UTC) - timedelta(days=365)
+    since = ingestor._compute_since(session)
+    after = datetime.now(UTC) - timedelta(days=365)
+
+    assert before - timedelta(seconds=5) <= since <= after + timedelta(seconds=5)
 
 
 def test_before_param_bounds_request_window() -> None:

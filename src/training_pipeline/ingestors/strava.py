@@ -22,6 +22,11 @@ STRAVA_DEFAULT_LOOKBACK_DAYS = 365
 STRAVA_PAGE_SIZE = 200
 STRAVA_RATE_WINDOW_SECONDS = 900
 STRAVA_RATE_LIMIT_THRESHOLD = 0.9
+# Strava's /athlete/activities `after` filter is keyed on activity start_date,
+# not upload time. An activity uploaded after a sync but with a start_date
+# before the next cursor will slip through. Re-scan a 48h window each run; the
+# (source, source_id) upsert makes the overlap a no-op for already-seen rows.
+STRAVA_OVERLAP_MARGIN_HOURS = 48
 # Same window used by the Garmin ingestor when folding into Strava. If the two
 # clocks drift more than this, the dedup misses and you'd get one row per side.
 GARMIN_DEDUPE_WINDOW_SECONDS = 60
@@ -196,7 +201,7 @@ class StravaIngestor(IngestorBase):
         )
         if latest is None:
             return datetime.now(UTC) - timedelta(days=STRAVA_DEFAULT_LOOKBACK_DAYS)
-        return latest
+        return latest - timedelta(hours=STRAVA_OVERLAP_MARGIN_HOURS)
 
     def _refresh_access_token(
         self, *, client_id: str, client_secret: str, refresh_token: str
