@@ -490,3 +490,49 @@ def test_consume_garmin_row_skipped_when_strava_already_exists() -> None:
     # garmin row found, then strava row found — conflict
     session.scalar.side_effect = [garmin_row, "existing-strava-uuid"]
     assert ingestor._consume_garmin_row_if_exists(session, mapped, MagicMock()) is False
+
+
+def test_before_param_bounds_request_window() -> None:
+    captured_params: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return _token_response()
+        captured_params.append(dict(request.url.params))
+        return httpx.Response(200, json=[])
+
+    client = _make_client(handler)
+    before = datetime(2026, 6, 10, tzinfo=UTC)
+    ingestor = StravaIngestor(http_client=client, before=before)
+    session = _make_session()
+
+    try:
+        ingestor._sync(session, since=datetime(2026, 6, 1, tzinfo=UTC))
+    finally:
+        client.close()
+
+    assert len(captured_params) == 1
+    assert captured_params[0]["before"] == str(int(before.timestamp()))
+    assert captured_params[0]["after"] == str(int(datetime(2026, 6, 1, tzinfo=UTC).timestamp()))
+
+
+def test_before_param_omitted_by_default() -> None:
+    captured_params: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return _token_response()
+        captured_params.append(dict(request.url.params))
+        return httpx.Response(200, json=[])
+
+    client = _make_client(handler)
+    ingestor = StravaIngestor(http_client=client)
+    session = _make_session()
+
+    try:
+        ingestor._sync(session, since=datetime(2026, 6, 1, tzinfo=UTC))
+    finally:
+        client.close()
+
+    assert len(captured_params) == 1
+    assert "before" not in captured_params[0]

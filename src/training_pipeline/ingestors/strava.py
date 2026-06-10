@@ -82,12 +82,14 @@ class StravaIngestor(IngestorBase):
         http_client: HttpClient | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
+        before: datetime | None = None,
     ) -> None:
         self._http = (
             http_client if http_client is not None else HttpClient(base_url=STRAVA_API_BASE)
         )
         self._sleeper = sleeper
         self._now = now
+        self._before = before
 
     @property
     def name(self) -> str:
@@ -126,9 +128,16 @@ class StravaIngestor(IngestorBase):
         page = 1
         auth_headers = {"Authorization": f"Bearer {access_token}"}
         while True:
+            params: dict[str, Any] = {
+                "after": after_epoch,
+                "page": page,
+                "per_page": STRAVA_PAGE_SIZE,
+            }
+            if self._before is not None:
+                params["before"] = int(self._before.timestamp())
             response = self._http.get(
                 "/api/v3/athlete/activities",
-                params={"after": after_epoch, "page": page, "per_page": STRAVA_PAGE_SIZE},
+                params=params,
                 headers=auth_headers,
             )
             activities = response.json()
