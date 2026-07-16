@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     LOG_LEVEL: str = "INFO"
 
+    # Shared secret required in the Authorization header to call the MCP
+    # server. Set it in Render (and your Claude connector). When empty the
+    # server fails closed and refuses every /mcp request, so an unconfigured
+    # deployment can never silently serve data unauthenticated.
+    MCP_AUTH_TOKEN: str = ""
+
     STRAVA_CLIENT_ID: str = ""
     STRAVA_CLIENT_SECRET: str = ""
     STRAVA_REFRESH_TOKEN: str = ""

@@ -8,7 +8,9 @@ Exposes:
 
 from fastapi import FastAPI
 
+from training_pipeline.mcp_server.auth import BearerAuthMiddleware
 from training_pipeline.mcp_server.server import mcp
+from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.logging import configure_logging, get_logger
 
 configure_logging()
@@ -26,4 +28,7 @@ def health() -> dict[str, str]:
 
 app.mount("/mcp", mcp_app)
 
-logger.info("mcp_server.app.ready")
+# Gate the MCP transport behind a shared bearer token. /health stays open.
+app.add_middleware(BearerAuthMiddleware, token=get_settings().MCP_AUTH_TOKEN)
+
+logger.info("mcp_server.app.ready", mcp_auth_configured=bool(get_settings().MCP_AUTH_TOKEN))
