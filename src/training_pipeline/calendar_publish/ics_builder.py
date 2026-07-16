@@ -79,21 +79,31 @@ def stable_uid(week_of: date_type, session_date: date_type, session_type: str) -
     return f"{digest}@{UID_DOMAIN}"
 
 
-def _build_description(session: dict[str, Any]) -> str:
+def _build_description(session: dict[str, Any], *, public: bool) -> str:
+    """Assemble the VEVENT description.
+
+    When ``public`` is set, the free-text ``description`` and ``notes`` fields
+    are omitted: they routinely carry injury, rehab, and other health details
+    that must never appear in the publicly hosted .ics feed. Only the structured
+    ``intensity`` (Easy/Moderate/Hard) is kept, which is training load, not
+    health data. Full detail still lives in Notion for the athlete.
+    """
     parts: list[str] = []
-    description = session.get("description")
-    if isinstance(description, str) and description.strip():
-        parts.append(description.strip())
+    if not public:
+        description = session.get("description")
+        if isinstance(description, str) and description.strip():
+            parts.append(description.strip())
     intensity = session.get("intensity")
     if isinstance(intensity, str) and intensity.strip():
         parts.append(f"Intensity: {intensity.strip()}")
-    notes = session.get("notes")
-    if isinstance(notes, str) and notes.strip():
-        parts.append(f"Notes: {notes.strip()}")
+    if not public:
+        notes = session.get("notes")
+        if isinstance(notes, str) and notes.strip():
+            parts.append(f"Notes: {notes.strip()}")
     return "\n".join(parts)
 
 
-def _session_to_event(plan: WeeklyPlan, session: dict[str, Any]) -> Event | None:
+def _session_to_event(plan: WeeklyPlan, session: dict[str, Any], *, public: bool) -> Event | None:
     session_date = _parse_session_date(_first_present(session, DATE_KEYS))
     if session_date is None:
         return None
@@ -116,13 +126,19 @@ def _session_to_event(plan: WeeklyPlan, session: dict[str, Any]) -> Event | None
     event.begin = begin
     event.duration = _parse_duration(_first_present(session, DURATION_KEYS))
     event.uid = stable_uid(plan.week_of, session_date, session_type)
-    description = _build_description(session)
+    description = _build_description(session, public=public)
     if description:
         event.description = description
     return event
 
 
-def build_calendar(plans: Iterable[WeeklyPlan]) -> Calendar:
+def build_calendar(plans: Iterable[WeeklyPlan], *, public: bool = False) -> Calendar:
+    """Render plans to a calendar.
+
+    Set ``public=True`` for the hosted feed to strip free-text health/injury
+    detail from event descriptions; the default keeps full detail for local or
+    private use.
+    """
     calendar = Calendar()
     for plan in plans:
         if not isinstance(plan.plan, list):
@@ -130,11 +146,11 @@ def build_calendar(plans: Iterable[WeeklyPlan]) -> Calendar:
         for session in plan.plan:
             if not isinstance(session, dict):
                 continue
-            event = _session_to_event(plan, session)
+            event = _session_to_event(plan, session, public=public)
             if event is not None:
                 calendar.events.add(event)
     return calendar
 
 
-def render(plans: Iterable[WeeklyPlan]) -> str:
-    return str(build_calendar(plans).serialize())
+def render(plans: Iterable[WeeklyPlan], *, public: bool = False) -> str:
+    return str(build_calendar(plans, public=public).serialize())

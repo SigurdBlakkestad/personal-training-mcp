@@ -177,6 +177,31 @@ def test_description_combines_description_intensity_and_notes() -> None:
     assert "Notes: Zone 2 only" in event.description
 
 
+def test_public_mode_strips_freetext_but_keeps_intensity() -> None:
+    plan = _plan(
+        date(2026, 5, 18),
+        [
+            {
+                "date": "2026-05-18",
+                "session_type": "Cycling",
+                "title": "Z2 ride",
+                "description": "PRIVATE-INJURY-NOTE avoid X. REHAB-CLINIC priority.",
+                "intensity": "Easy",
+                "notes": "PRIVATE-SKIP-CONDITION",
+                "duration_min": 60,
+            }
+        ],
+    )
+    event = next(iter(build_calendar([plan], public=True).events))
+    detail = event.description or ""
+    assert "PRIVATE-INJURY-NOTE" not in detail
+    assert "REHAB-CLINIC" not in detail
+    assert "PRIVATE-SKIP-CONDITION" not in detail
+    assert "Intensity: Easy" in detail
+    # Title still carries the useful label for the phone.
+    assert event.name == "Z2 ride"
+
+
 def test_render_returns_valid_ics_string() -> None:
     plan = _plan(
         date(2026, 5, 18),

@@ -72,8 +72,12 @@ def fetch_plans(
 
 
 def write_calendar(plans: list[WeeklyPlan], output_path: Path) -> bool:
-    """Render plans and write to ``output_path``. Return True if content changed."""
-    content = render(plans).encode("utf-8")
+    """Render plans and write to ``output_path``. Return True if content changed.
+
+    Rendered with ``public=True``: the file is served on a public URL that the
+    iPhone calendar subscribes to, so free-text health/injury detail is stripped.
+    """
+    content = render(plans, public=True).encode("utf-8")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     previous = output_path.read_bytes() if output_path.exists() else None
     if previous == content:
