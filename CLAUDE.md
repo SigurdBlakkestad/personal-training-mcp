@@ -50,4 +50,3 @@ When creating files that don't need scanning every session (generated `.ics` fil
 
 - `docs/SETUP_MANUAL.md` — manual setup steps for forkers (accounts, OAuth, secrets, iPhone calendar)
 - `OPERATIONS.md` — local development, daily rhythm, secret rotation, failure recovery
-- `docs/archive/` — historical build artifacts (`BUILD_PLAN.md`, `RUN_STEP_PROMPT.md`) — frozen, not part of active workflow

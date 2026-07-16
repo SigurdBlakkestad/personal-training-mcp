@@ -67,6 +67,8 @@ The code is already written. To run your own copy you only need to set up your o
 4. **Trigger the workflows** in your fork's Actions tab to do the first sync (`sync_strava`, `sync_withings`, etc.). After that they run on schedule.
 5. **Connect the MCP server to Claude.ai** once Render is deployed (SETUP_MANUAL Section 7.4) and create your Project (Section 10).
 
+> **Heads-up on Garmin.** The Garmin sync relies on [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect), an *unofficial* reverse-engineered API wrapper. Garmin can change endpoints or rate-limit logins at any time, so this collector may break without warning — it's isolated with `continue-on-error` in `sync_garmin.yml` so a Garmin failure never blocks the other syncs. Strava and Withings use official, stable APIs.
+
 `OPERATIONS.md` covers ongoing operation: secret rotation, common failures, backfill, when to refactor.
 
 Total setup: roughly one weekend of focused account-creation and OAuth dances.
@@ -74,11 +76,6 @@ Total setup: roughly one weekend of focused account-creation and OAuth dances.
 ### Want a lighter version?
 
 The full stack is overkill if you don't need SQL aggregations or derived training-load metrics. A "Notion-only" variant — Notion as the source of truth, no Supabase, no Alembic, simpler MCP — is feasible and would cut setup to a few hours. Not built yet; open an issue if you want to collaborate on it.
-
-### Want to see how it was built?
-
-The 12-step Claude Code build plan lives in `docs/archive/BUILD_PLAN.md`, with the wrapper runner prompt in `docs/archive/RUN_STEP_PROMPT.md`. Useful as a template if you want to extend the project (e.g., add a fourth data source) or build something similar from scratch. A "Deviations from the original plan" section at the top of the build plan documents where the shipped code diverges — most notably, Garmin wins over Strava for device-measured fields (HR, power, cadence, name) when both sources cover the same session.
-
 ## Privacy and data ownership
 
 Your training data lives in your Supabase project. Your credentials live in your `.env` (gitignored) and GitHub Secrets (encrypted at rest). Nothing in this repo is your personal data. Fork freely.
