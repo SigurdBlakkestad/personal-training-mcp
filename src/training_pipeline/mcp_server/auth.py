@@ -1,73 +1,75 @@
-"""Bearer-token gate for the MCP HTTP transport.
+"""OAuth authentication for the MCP server.
 
-The MCP endpoint exposes read *and* write access to the athlete's training and
-health data, so it must never be reachable unauthenticated. This is a pure
-ASGI middleware (not ``BaseHTTPMiddleware``) so it inspects request headers
-without buffering the streamed MCP responses.
+Claude.ai custom connectors authenticate over OAuth 2.1 with Dynamic Client
+Registration (DCR) and PKCE — a static bearer header is not an option in that
+UI. FastMCP's ``GitHubProvider`` is an OAuth proxy that presents the DCR-
+compliant interface Claude.ai expects while delegating the actual login to a
+GitHub OAuth app.
 
-Behaviour:
-- Requests outside ``protected_prefix`` (e.g. ``/health``) pass through.
-- With no token configured the gate fails closed: every protected request gets
-  503, so a misconfigured deploy can never regress to serving data openly.
-- Otherwise the ``Authorization: Bearer <token>`` header must match the
-  configured token (constant-time compare) or the request gets 401.
+OAuth only proves *who* logged in; by itself any GitHub account would pass. This
+module wraps the provider so only an explicit allowlist of GitHub logins is
+accepted — everyone else is rejected at token verification (401). It fails
+closed: if the login claim is missing, or the server is misconfigured, access
+is denied rather than granted.
 """
 
-import hmac
-from collections.abc import Awaitable, Callable
-from typing import Any
+from __future__ import annotations
 
+from fastmcp.server.auth.auth import AccessToken
+from fastmcp.server.auth.providers.github import GitHubProvider
+
+from training_pipeline.shared.config import Settings
 from training_pipeline.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
-Scope = dict[str, Any]
-Receive = Callable[[], Awaitable[dict[str, Any]]]
-Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+class RestrictedGitHubProvider(GitHubProvider):
+    """GitHubProvider that only admits an allowlist of GitHub logins."""
+
+    def __init__(self, *, allowed_logins: set[str], **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._allowed_logins = {login.lower() for login in allowed_logins}
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        access = await super().verify_token(token)
+        if access is None:
+            return None
+        login = (access.claims or {}).get("login")
+        if not login or login.lower() not in self._allowed_logins:
+            logger.warning("mcp_server.auth.github_login_denied", login=login)
+            return None
+        return access
 
 
-class BearerAuthMiddleware:
-    def __init__(self, app: object, token: str, protected_prefix: str = "/mcp") -> None:
-        self.app = app
-        self.token = token
-        self.protected_prefix = protected_prefix
+def build_auth(settings: Settings) -> RestrictedGitHubProvider | None:
+    """Return the configured OAuth provider, or None if OAuth is not set up.
 
-    def _is_protected(self, path: str) -> bool:
-        return path == self.protected_prefix or path.startswith(self.protected_prefix + "/")
+    Returning None leaves the server unauthenticated, so callers that require a
+    protected deployment must treat a None here as a hard error (see server.py).
+    """
+    allowed = {
+        login.strip() for login in settings.MCP_ALLOWED_GITHUB_LOGINS.split(",") if login.strip()
+    }
+    if not (
+        settings.MCP_GITHUB_CLIENT_ID
+        and settings.MCP_GITHUB_CLIENT_SECRET
+        and settings.MCP_PUBLIC_URL
+        and allowed
+    ):
+        return None
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not self._is_protected(scope.get("path", "")):
-            await self.app(scope, receive, send)  # type: ignore[operator]
-            return
-
-        if not self.token:
-            logger.error("mcp_server.auth.not_configured", path=scope.get("path"))
-            await self._deny(send, 503, "mcp auth not configured")
-            return
-
-        headers = dict(scope.get("headers", []))
-        provided = headers.get(b"authorization", b"").decode("latin-1")
-        expected = f"Bearer {self.token}"
-        if not (provided and hmac.compare_digest(provided, expected)):
-            logger.warning("mcp_server.auth.denied", path=scope.get("path"))
-            await self._deny(send, 401, "unauthorized")
-            return
-
-        await self.app(scope, receive, send)  # type: ignore[operator]
-
-    async def _deny(self, send: Send, status: int, message: str) -> None:
-        body = f'{{"error":"{message}"}}'.encode()
-        await send(
-            {
-                "type": "http.response.start",
-                "status": status,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
+    base_url = settings.MCP_PUBLIC_URL.rstrip("/")
+    return RestrictedGitHubProvider(
+        allowed_logins=allowed,
+        client_id=settings.MCP_GITHUB_CLIENT_ID,
+        client_secret=settings.MCP_GITHUB_CLIENT_SECRET,
+        # base_url is the public origin: FastMCP serves the OAuth + discovery
+        # routes (/.well-known/*, /authorize, /token, /register, /auth/callback)
+        # at the root, and the MCP endpoint itself at /mcp. The app must be
+        # served at the root (see app.py) for these paths to resolve.
+        base_url=base_url,
+    )
 
 
-__all__ = ["BearerAuthMiddleware"]
+__all__ = ["RestrictedGitHubProvider", "build_auth"]

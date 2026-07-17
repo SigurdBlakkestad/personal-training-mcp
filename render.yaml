@@ -13,7 +13,13 @@ services:
         value: src
       - key: DATABASE_URL
         sync: false
-      - key: MCP_AUTH_TOKEN
+      - key: MCP_GITHUB_CLIENT_ID
+        sync: false
+      - key: MCP_GITHUB_CLIENT_SECRET
+        sync: false
+      - key: MCP_PUBLIC_URL
+        sync: false
+      - key: MCP_ALLOWED_GITHUB_LOGINS
         sync: false
       - key: LOG_LEVEL
         value: INFO

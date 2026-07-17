@@ -7,10 +7,22 @@ FastMCP so they are discoverable over the MCP protocol.
 from typing import Any
 
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from training_pipeline.mcp_server import tools
+from training_pipeline.mcp_server.auth import build_auth
+from training_pipeline.shared.config import get_settings
 
-mcp: FastMCP[Any] = FastMCP("personal-training")
+_settings = get_settings()
+_auth = build_auth(_settings)
+
+mcp: FastMCP[Any] = FastMCP("personal-training", auth=_auth)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
 
 
 @mcp.tool

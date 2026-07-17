@@ -12,11 +12,14 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     LOG_LEVEL: str = "INFO"
 
-    # Shared secret required in the Authorization header to call the MCP
-    # server. Set it in Render (and your Claude connector). When empty the
-    # server fails closed and refuses every /mcp request, so an unconfigured
-    # deployment can never silently serve data unauthenticated.
-    MCP_AUTH_TOKEN: str = ""
+    # OAuth for the MCP server. Claude.ai connectors authenticate over OAuth
+    # (DCR + PKCE), so the server logs users in via a GitHub OAuth app and only
+    # admits the allowlisted logins. All four must be set for auth to engage;
+    # server.py refuses to start unprotected in production when they are not.
+    MCP_GITHUB_CLIENT_ID: str = ""
+    MCP_GITHUB_CLIENT_SECRET: str = ""
+    MCP_PUBLIC_URL: str = ""  # public origin, e.g. https://<app>.onrender.com
+    MCP_ALLOWED_GITHUB_LOGINS: str = ""  # comma-separated GitHub usernames
 
     STRAVA_CLIENT_ID: str = ""
     STRAVA_CLIENT_SECRET: str = ""
