@@ -67,7 +67,9 @@ The code is already written. To run your own copy you only need to set up your o
 4. **Trigger the workflows** in your fork's Actions tab to do the first sync (`sync_strava`, `sync_withings`, etc.). After that they run on schedule.
 5. **Connect the MCP server to Claude.ai** once Render is deployed (SETUP_MANUAL Section 7.4) and create your Project (Section 10).
 
-> **Heads-up on Garmin.** The Garmin sync relies on [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect), an *unofficial* reverse-engineered API wrapper. Garmin can change endpoints or rate-limit logins at any time, so this collector may break without warning — it's isolated with `continue-on-error` in `sync_garmin.yml` so a Garmin failure never blocks the other syncs. Strava and Withings use official, stable APIs.
+> **Heads-up on Garmin.** The Garmin sync relies on [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect), an *unofficial* reverse-engineered API wrapper. Garmin can change endpoints or rate-limit logins at any time, so this collector may break without warning — it's isolated with `continue-on-error` in `sync_garmin.yml` so a Garmin failure never blocks the other syncs.
+>
+> Because of that, **Strava is the reliable source for your activities**: it uses an official, stable API, so your workouts keep syncing even when the Garmin route is down. Garmin only layers device-specific metrics (training load, HRV, sleep detail) on top of the Strava activity, and takes priority for those fields when present. Withings (body composition, sleep) is likewise an official, stable API. If you only run Strava + Withings, you get everything except the Garmin device metrics.
 
 `OPERATIONS.md` covers ongoing operation: secret rotation, common failures, backfill, when to refactor.
 

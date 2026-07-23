@@ -66,8 +66,6 @@ git config --global user.email "your-email@example.com"
 
 You now have the code. The rest of this manual gets you the credentials and external services it needs to run.
 
-> **For the original builder:** Section 2 was originally a `git init` + `gh repo create` flow for the very first commit. That's preserved in `docs/archive/BUILD_PLAN.md` if you ever need to recreate the repo from scratch.
-
 ---
 
 ## Section 3 — Supabase
