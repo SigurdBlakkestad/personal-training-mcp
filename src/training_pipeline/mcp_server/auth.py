@@ -45,8 +45,9 @@ class RestrictedGitHubProvider(GitHubProvider):
 def build_auth(settings: Settings) -> RestrictedGitHubProvider | None:
     """Return the configured OAuth provider, or None if OAuth is not set up.
 
-    Returning None leaves the server unauthenticated, so callers that require a
-    protected deployment must treat a None here as a hard error (see server.py).
+    Returning None leaves the server open; app.py runs it unauthenticated with a
+    loud warning until all four settings are supplied, at which point auth
+    engages automatically.
     """
     allowed = {
         login.strip() for login in settings.MCP_ALLOWED_GITHUB_LOGINS.split(",") if login.strip()

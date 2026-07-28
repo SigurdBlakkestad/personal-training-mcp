@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # OAuth for the MCP server. Claude.ai connectors authenticate over OAuth
     # (DCR + PKCE), so the server logs users in via a GitHub OAuth app and only
     # admits the allowlisted logins. All four must be set for auth to engage;
-    # server.py refuses to start unprotected in production when they are not.
+    # when any is missing the server runs open (see app.py) and warns loudly.
     MCP_GITHUB_CLIENT_ID: str = ""
     MCP_GITHUB_CLIENT_SECRET: str = ""
     MCP_PUBLIC_URL: str = ""  # public origin, e.g. https://<app>.onrender.com

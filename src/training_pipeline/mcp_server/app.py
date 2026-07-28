@@ -5,15 +5,14 @@ The FastMCP app is served at the root so its OAuth discovery routes
 Claude.ai expects them; the MCP protocol endpoint sits at /mcp and /health is a
 custom route on the server.
 
-Fails closed: if OAuth is not configured (see auth.build_auth) the app is
-replaced by a stub that serves /health but answers 503 everywhere else, so a
-misconfigured deploy never exposes data unauthenticated.
+Auth is opt-in by configuration: when the four MCP_GITHUB_*/MCP_PUBLIC_URL/
+MCP_ALLOWED_GITHUB_LOGINS settings are present (see auth.build_auth) the server
+requires GitHub OAuth login; when they are absent it runs OPEN and logs a loud
+warning on every boot. Running open is deliberate so the connector keeps
+working until the operator chooses to turn auth on — it is not a silent default.
 """
 
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.routing import Route
 
 from training_pipeline.mcp_server.server import mcp
 from training_pipeline.shared.logging import configure_logging, get_logger
@@ -23,26 +22,17 @@ logger = get_logger(__name__)
 
 _auth_configured = mcp.auth is not None
 
+app: Starlette = mcp.http_app(path="/mcp")
 
-async def _health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
-
-
-async def _unconfigured(request: Request) -> JSONResponse:
-    return JSONResponse({"error": "mcp auth not configured"}, status_code=503)
-
-
-app: Starlette
 if _auth_configured:
-    app = mcp.http_app(path="/mcp")
+    logger.info("mcp_server.app.ready", mcp_auth_configured=True)
 else:
-    logger.error("mcp_server.app.auth_not_configured")
-    _methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
-    app = Starlette(
-        routes=[
-            Route("/health", _health, methods=["GET"]),
-            Route("/{path:path}", _unconfigured, methods=_methods),
-        ]
+    logger.warning(
+        "mcp_server.app.ready_unauthenticated",
+        detail=(
+            "MCP endpoint is OPEN — no OAuth configured. Anyone with the URL can "
+            "read and write your data. Set MCP_GITHUB_CLIENT_ID, "
+            "MCP_GITHUB_CLIENT_SECRET, MCP_PUBLIC_URL and MCP_ALLOWED_GITHUB_LOGINS "
+            "to require GitHub login."
+        ),
     )
-
-logger.info("mcp_server.app.ready", mcp_auth_configured=_auth_configured)
