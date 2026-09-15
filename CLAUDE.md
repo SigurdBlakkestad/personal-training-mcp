@@ -40,7 +40,8 @@ Search anchors for navigation. Each path is populated by the build step that int
 
 ## Existing systems
 
-- Garmin: fragile dependency, isolated via `continue-on-error: true` in `sync_garmin.yml`. Recovery = re-run `scripts/garmin_auth.py` locally, update `GARMINTOKENS_B64` secret. `mobile+*` strategies are usually 429-rate-limited (account-scoped, hours-long window); login still succeeds via `widget+cffi`, which only persists tokens when `client.login(tokenstore=...)` gets a path.
+- Garmin: fragile dependency; `sync_garmin.yml` fails loud (red run) when the token dies — it's its own workflow, so a red run never blocks the other syncs. Recovery = re-run `scripts/garmin_auth.py` locally, update `GARMINTOKENS_B64` secret. `mobile+*` strategies are usually 429-rate-limited (account-scoped, hours-long window); login still succeeds via `widget+cffi`, which only persists tokens when `client.login(tokenstore=...)` gets a path. Keep `garminconnect` current (floor pinned in `requirements.txt`) — stale versions fail Garmin's SSO with "Failed to retrieve social profile".
+- Strava: API is subscriber-only as of mid-2026. Without an active Strava subscription the app is deactivated and every activity call returns `403` (`Application/Status/Inactive`); token refresh still 200s but data is blocked, and re-auth does not help. `sync_strava.yml` is disabled until/unless a subscription is active. Garmin is the primary activity source.
 
 ## Housekeeping
 

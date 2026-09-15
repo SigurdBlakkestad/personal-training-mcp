@@ -8,7 +8,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # No continue-on-error: Garmin is its own workflow, so a red run here never
+    # blocks Strava/Withings/derived (those run on their own schedules). Failing
+    # loud is deliberate — a silent "success" once hid a 4-month token outage.
     steps:
       - uses: actions/checkout@v4
 

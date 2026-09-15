@@ -13,4 +13,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 notion-client>=2.2,<2.6
 ics>=0.7
-garminconnect>=0.2.40
+# Floor bumped to the known-good version — older releases fail Garmin's SSO
+# with "Failed to retrieve social profile". Keep this current when Garmin
+# changes their auth (roughly yearly); it pulls a compatible `garth`.
+garminconnect>=0.3.15
