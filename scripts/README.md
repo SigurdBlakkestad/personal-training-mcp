@@ -51,5 +51,8 @@ python scripts/garmin_auth.py
 
 Prompts for Garmin email, password, and MFA code if challenged. On
 success it prints a single long base64 string — paste it into the
-`GARMINTOKENS_B64` GitHub secret. Tokens last roughly a year; re-run
-when the workflow starts failing with auth errors.
+`GARMINTOKENS_B64` GitHub secret. That secret only seeds the first run:
+Garmin rotates the refresh token on every refresh, so each sync stores
+the current one in `service_credentials`. Re-run this when the workflow
+starts failing on auth, then delete the stored row — otherwise the
+rejected token keeps being replayed. See OPERATIONS.md.

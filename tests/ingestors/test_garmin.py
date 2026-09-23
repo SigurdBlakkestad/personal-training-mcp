@@ -71,6 +71,33 @@ def _make_session(*, upsert_inserted: bool = True) -> MagicMock:
     return session
 
 
+class _FakeGarminClient:
+    """Stands in for garminconnect's Garmin, whose token serializer lives on
+    the inner ``.client``."""
+
+    def __init__(self, payload: str) -> None:
+        self.client = _FakeInnerClient(payload)
+
+
+class _FakeInnerClient:
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+
+    def dumps(self) -> str:
+        return self._payload
+
+
+def _stub_token_store(monkeypatch: pytest.MonkeyPatch, *, stored: str | None) -> list[str]:
+    """Replace the DB-backed token store with in-memory stubs.
+
+    Returns the list that persisted payloads are appended to.
+    """
+    saved: list[str] = []
+    monkeypatch.setattr("training_pipeline.ingestors.garmin.load_stored_tokens", lambda: stored)
+    monkeypatch.setattr("training_pipeline.ingestors.garmin.save_stored_tokens", saved.append)
+    return saved
+
+
 def test_normalize_sport_known_and_unknown() -> None:
     assert _normalize_sport("road_biking") == "cycling"
     assert _normalize_sport("indoor_cycling") == "cycling"
@@ -576,6 +603,7 @@ def test_initialize_client_raises_without_token(monkeypatch: pytest.MonkeyPatch)
         GARMINTOKENS_B64 = ""
 
     monkeypatch.setattr("training_pipeline.ingestors.garmin.get_settings", lambda: FakeSettings())
+    _stub_token_store(monkeypatch, stored=None)
     ingestor = GarminIngestor()
     with pytest.raises(RuntimeError, match="GARMINTOKENS_B64"):
         ingestor._initialize_client()
@@ -596,6 +624,7 @@ def test_initialize_client_uses_factory_when_provided(
         GARMINTOKENS_B64 = b64
 
     monkeypatch.setattr("training_pipeline.ingestors.garmin.get_settings", lambda: FakeSettings())
+    _stub_token_store(monkeypatch, stored=None)
 
     captured_path: list[str] = []
     fake_client = object()
@@ -608,6 +637,74 @@ def test_initialize_client_uses_factory_when_provided(
     client = ingestor._initialize_client()
     assert client is fake_client
     assert captured_path[0].endswith(".garminconnect")
+
+
+def test_initialize_client_prefers_stored_tokens_over_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The secret is a seed, not the source of truth — once a token has been
+    stored, the secret holds one Garmin has already invalidated."""
+
+    class FakeSettings:
+        GARMINTOKENS_B64 = "c2hvdWxkLW5vdC1iZS11c2Vk"
+
+    monkeypatch.setattr("training_pipeline.ingestors.garmin.get_settings", lambda: FakeSettings())
+    _stub_token_store(monkeypatch, stored='{"di_refresh_token": "stored"}')
+
+    captured: list[str] = []
+    ingestor = GarminIngestor(client_factory=lambda ts: captured.append(ts) or object())
+    ingestor._initialize_client()
+
+    assert captured == ['{"di_refresh_token": "stored"}']
+
+
+def test_sync_persists_rotated_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: Garmin rotates the refresh token on every refresh and kills
+    the old one. Without persisting what the client ends up holding, the next
+    run replays a dead token and 401s forever."""
+    saved = _stub_token_store(monkeypatch, stored='{"di_refresh_token": "old"}')
+
+    rotated = '{"di_refresh_token": "rotated"}'
+    ingestor = GarminIngestor(client=_FakeGarminClient(rotated))
+    ingestor._sync_activities = MagicMock()  # type: ignore[method-assign]
+    ingestor._sync_daily_summaries = MagicMock()  # type: ignore[method-assign]
+
+    ingestor._sync(_make_session(), datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert saved == [rotated]
+
+
+def test_sync_persists_rotated_tokens_even_when_sync_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rotation that happened mid-sync must outlive the failure, or the
+    failed run takes the only usable token down with it."""
+    saved = _stub_token_store(monkeypatch, stored='{"di_refresh_token": "old"}')
+
+    rotated = '{"di_refresh_token": "rotated"}'
+    ingestor = GarminIngestor(client=_FakeGarminClient(rotated))
+    ingestor._sync_activities = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("boom")
+    )
+    ingestor._sync_daily_summaries = MagicMock()  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        ingestor._sync(_make_session(), datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert saved == [rotated]
+
+
+def test_sync_does_not_rewrite_unchanged_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    unchanged = '{"di_refresh_token": "same"}'
+    saved = _stub_token_store(monkeypatch, stored=unchanged)
+
+    ingestor = GarminIngestor(client_factory=lambda ts: _FakeGarminClient(unchanged))
+    ingestor._sync_activities = MagicMock()  # type: ignore[method-assign]
+    ingestor._sync_daily_summaries = MagicMock()  # type: ignore[method-assign]
+
+    ingestor._sync(_make_session(), datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert saved == []
 
 
 def test_compute_since_defaults_to_30_days_ago() -> None:

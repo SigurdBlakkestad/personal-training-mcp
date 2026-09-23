@@ -396,7 +396,13 @@ On success it:
 
 ### 9.4 Token expiry
 
-Garmin refresh tokens last approximately one year. When the workflow starts failing with auth errors (after roughly a year), re-run `python scripts/garmin_auth.py` locally and update the `GARMINTOKENS_B64` secret.
+`GARMINTOKENS_B64` is a seed, not the live credential. Garmin issues a new refresh token on every refresh and invalidates the previous one, so each sync writes the current token to the `service_credentials` table and reads it from there on the next run. A static secret replayed on its own would stop working within days.
+
+When the workflow starts failing with auth errors, re-run `python scripts/garmin_auth.py` locally, update the `GARMINTOKENS_B64` secret, **and** delete the stored row so the new seed is picked up:
+
+```sql
+delete from service_credentials where service = 'garmin';
+```
 
 ### 9.5 When Garmin breaks (it will)
 

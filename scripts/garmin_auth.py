@@ -1,6 +1,6 @@
 """Interactive Garmin Connect token bootstrap.
 
-Run locally one time (and again when refresh tokens expire, ~once a year):
+Run locally when the sync starts failing on auth:
 
     python scripts/garmin_auth.py
 
@@ -10,6 +10,16 @@ The script:
   3. Lets python-garminconnect write tokens to ~/.garminconnect/
   4. Tars + base64-encodes that directory and prints the string
   5. You paste that string into the GitHub Secret GARMINTOKENS_B64
+
+GARMINTOKENS_B64 is only the *seed*. Garmin rotates the refresh token on every
+refresh and invalidates the previous one, so the live token is the `garmin` row
+in `service_credentials`, rewritten by each run. That row wins over the secret,
+so after setting a fresh secret you must also delete it:
+
+    delete from service_credentials where service = 'garmin';
+
+Otherwise the next run keeps replaying the token Garmin already rejected. See
+OPERATIONS.md, "Garmin workflow failing".
 
 If MFA fails repeatedly, wait ~30 minutes (rate limit) before retrying. If still
 failing, see https://github.com/cyberjunky/python-garminconnect/issues — Garmin
