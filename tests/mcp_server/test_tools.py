@@ -10,6 +10,8 @@ from sqlalchemy.dialects import postgresql
 from training_pipeline.mcp_server import tools
 from training_pipeline.shared.models import (
     Activity,
+    ActivityExerciseSet,
+    ActivityLap,
     AthleteContext,
     BodyMeasurement,
     DailySummary,
@@ -227,6 +229,94 @@ def test_get_activity_by_id_returns_full_payload(session: FakeSession) -> None:
     assert result["id"] == str(activity.id)
     assert result["raw"] == {"src": "strava"}
     assert result["rpe"] == 7
+
+
+def test_get_activity_by_id_includes_laps_and_exercise_sets(session: FakeSession) -> None:
+    activity = _make_activity()
+    laps = [
+        ActivityLap(
+            activity_id=activity.id,
+            lap_index=1,
+            lap_type="WARMUP",
+            duration_s=300.0,
+            distance_meters=1719.54,
+            avg_power=101,
+            max_power=103,
+            normalized_power=101,
+            avg_hr=109,
+            max_hr=115,
+            avg_cadence=69,
+        ),
+        ActivityLap(
+            activity_id=activity.id,
+            lap_index=2,
+            lap_type="ACTIVE",
+            duration_s=480.0,
+            avg_power=193,
+            max_power=198,
+            avg_hr=149,
+        ),
+    ]
+    sets = [
+        ActivityExerciseSet(
+            activity_id=activity.id,
+            set_index=0,
+            set_type="ACTIVE",
+            exercise_name="BENCH_PRESS",
+            exercise_confidence=99.6,
+            reps=12,
+            weight_kg=40.0,
+            duration_s=128.7,
+        ),
+        ActivityExerciseSet(
+            activity_id=activity.id,
+            set_index=1,
+            set_type="REST",
+            duration_s=115.37,
+        ),
+    ]
+    session.get_returns[(Activity, activity.id)] = activity
+
+    def dispatch(stmt: str) -> Any:
+        if "activity_laps" in stmt:
+            return laps
+        if "activity_exercise_sets" in stmt:
+            return sets
+        return []
+
+    session.dispatch = dispatch
+    session.scalar_dispatch = lambda stmt: None
+
+    result = tools._get_activity_by_id(session, str(activity.id))
+
+    assert result is not None
+    assert [lap["lap_type"] for lap in result["laps"]] == ["WARMUP", "ACTIVE"]
+    work = result["laps"][1]
+    assert work["avg_power"] == 193
+    assert work["duration_min"] == 8.0
+    assert result["laps"][0]["distance_km"] == 1.72
+
+    assert [s["set_type"] for s in result["exercise_sets"]] == ["ACTIVE", "REST"]
+    assert result["exercise_sets"][0]["reps"] == 12
+    assert result["exercise_sets"][0]["weight_kg"] == 40.0
+    assert result["exercise_sets"][0]["exercise_confidence"] == 99.6
+
+    # Existing fields survive the addition.
+    assert result["raw"] == {"src": "strava"}
+    assert result["avg_power"] == 200
+
+
+def test_get_activity_by_id_omits_detail_arrays_when_absent(session: FakeSession) -> None:
+    activity = _make_activity()
+    session.get_returns[(Activity, activity.id)] = activity
+    session.dispatch = lambda stmt: []
+    session.scalar_dispatch = lambda stmt: None
+
+    result = tools._get_activity_by_id(session, str(activity.id))
+
+    assert result is not None
+    assert "laps" not in result
+    assert "exercise_sets" not in result
 
 
 def test_get_daily_summary_merges_sources(session: FakeSession) -> None:

@@ -8,8 +8,9 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from structlog.stdlib import BoundLogger
@@ -18,7 +19,13 @@ from training_pipeline.ingestors.base import IngestionResult, IngestorBase
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
-from training_pipeline.shared.models import Activity, IngestionRun, ServiceCredential
+from training_pipeline.shared.models import (
+    Activity,
+    ActivityExerciseSet,
+    ActivityLap,
+    IngestionRun,
+    ServiceCredential,
+)
 
 logger = get_logger(__name__)
 
@@ -26,6 +33,12 @@ GARMIN_CREDENTIAL_SERVICE = "garmin"
 GARMIN_DEFAULT_LOOKBACK_DAYS = 30
 GARMIN_PAGE_SIZE = 20
 STRAVA_DEDUPE_WINDOW_SECONDS = 60
+
+# Sports whose laps are worth storing, on top of the hasIntensityIntervals
+# gate. Endurance sessions have laps too, but with intensityType null they are
+# odometer marks, not workout shape. Structured runs are the obvious next
+# entry here; cycling is where the per-lap watts are.
+LAP_DETAIL_SPORTS: frozenset[str] = frozenset({"cycling"})
 
 # Columns Garmin alone provides — when a Garmin activity merges into an
 # existing Strava row, copy these onto the Strava row so the rich data is not
@@ -150,6 +163,118 @@ def _extract_cadence(activity: dict[str, Any]) -> int | None:
         if value is not None:
             return int(value)
     return None
+
+
+def _parse_laps(splits: Any) -> list[dict[str, Any]]:
+    """Map Garmin's ``/splits`` response to activity_laps rows.
+
+    Garmin returns laps under ``lapDTOs`` with a 1-based ``lapIndex`` and an
+    ``intensityType`` of WARMUP / ACTIVE / RECOVERY / COOLDOWN. Note the
+    per-lap cadence key is ``averageBikeCadence``, not the session-level
+    ``averageBikingCadenceInRevPerMinute``.
+    """
+    if not isinstance(splits, dict):
+        return []
+    laps = splits.get("lapDTOs")
+    if not isinstance(laps, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for position, lap in enumerate(laps, start=1):
+        if not isinstance(lap, dict):
+            continue
+        index = _coerce_int(lap.get("lapIndex"))
+        rows.append(
+            {
+                "lap_index": index if index is not None else position,
+                "lap_type": _coerce_str(lap.get("intensityType")),
+                "duration_s": _coerce_float(lap.get("duration")),
+                "moving_duration_s": _coerce_float(lap.get("movingDuration")),
+                "distance_meters": _coerce_float(lap.get("distance")),
+                "avg_power": _coerce_int(lap.get("averagePower")),
+                "max_power": _coerce_int(lap.get("maxPower")),
+                "normalized_power": _coerce_int(lap.get("normalizedPower")),
+                "avg_hr": _coerce_int(lap.get("averageHR")),
+                "max_hr": _coerce_int(lap.get("maxHR")),
+                "avg_cadence": _coerce_int(
+                    lap.get("averageBikeCadence")
+                    if lap.get("averageBikeCadence") is not None
+                    else lap.get("averageRunCadence")
+                ),
+            }
+        )
+    return rows
+
+
+def _top_exercise(exercises: Any) -> tuple[str | None, float | None]:
+    """Return (name, confidence) for the most likely detected movement.
+
+    Garmin does not record what the lifter chose — the watch classifies the
+    motion and answers with a ranked candidate list. Highest probability wins,
+    and a tie goes to a named candidate because "UNKNOWN, equally likely"
+    carries no information. ``UNKNOWN`` is deliberately kept when it genuinely
+    leads: real sets come back as ``UNKNOWN`` at 99.6% alongside named
+    candidates at 0%, and reporting the 0% guess would invent a movement the
+    watch never claimed.
+
+    The label is ``CATEGORY/SUB`` when a sub-category is given (Garmin usually
+    leaves it null), otherwise just the category.
+    """
+    if not isinstance(exercises, list):
+        return None, None
+    ranked = [e for e in exercises if isinstance(e, dict)]
+    if not ranked:
+        return None, None
+    best = max(
+        ranked,
+        key=lambda e: (
+            _coerce_float(e.get("probability")) or 0.0,
+            e.get("category") not in (None, "UNKNOWN"),
+        ),
+    )
+    category = _coerce_str(best.get("category"))
+    sub = _coerce_str(best.get("name"))
+    if category is None:
+        return None, None
+    label = f"{category}/{sub}" if sub else category
+    return label, _coerce_float(best.get("probability"))
+
+
+def _parse_exercise_sets(payload: Any) -> list[dict[str, Any]]:
+    """Map Garmin's ``/exerciseSets`` response to activity_exercise_sets rows.
+
+    ``weight`` is grams when present. It is null on every set the watch
+    records on its own — Garmin has no way to measure load, so a value only
+    appears once one is typed into Garmin Connect. REST entries are kept:
+    rest length is half of what makes a strength session readable.
+    """
+    if not isinstance(payload, dict):
+        return []
+    sets = payload.get("exerciseSets")
+    if not isinstance(sets, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for position, entry in enumerate(sets):
+        if not isinstance(entry, dict):
+            continue
+        index = _coerce_int(entry.get("messageIndex"))
+        name, confidence = _top_exercise(entry.get("exercises"))
+        weight_grams = _coerce_float(entry.get("weight"))
+        rows.append(
+            {
+                "set_index": index if index is not None else position,
+                "set_type": _coerce_str(entry.get("setType")),
+                "exercise_name": name,
+                "exercise_confidence": confidence,
+                "reps": _coerce_int(entry.get("repetitionCount")),
+                # Grams, and 0 is Garmin's "no load recorded" placeholder
+                # rather than a real bodyweight set.
+                "weight_kg": weight_grams / 1000.0 if weight_grams else None,
+                "duration_s": _coerce_float(entry.get("duration")),
+            }
+        )
+    return rows
 
 
 def decode_tokens_to_dir(b64: str) -> str:
@@ -440,9 +565,11 @@ class GarminIngestor(IngestorBase):
                     stop = True
                     break
                 mapped = self._map_activity(activity, start_time)
-                if self._merge_into_strava_if_exists(session, mapped, log):
+                merged = self._merge_into_strava_if_exists(session, mapped, log)
+                if merged is not None:
                     result.records_processed += 1
                     result.records_updated += 1
+                    self._sync_activity_detail(client, session, activity, mapped, merged, log)
                     continue
                 outcome = self.upsert_activity(session, mapped)
                 result.records_processed += 1
@@ -450,6 +577,7 @@ class GarminIngestor(IngestorBase):
                     result.records_inserted += 1
                 else:
                     result.records_updated += 1
+                self._sync_activity_detail(client, session, activity, mapped, None, log)
             if stop or len(batch) < GARMIN_PAGE_SIZE:
                 break
             start += GARMIN_PAGE_SIZE
@@ -468,7 +596,12 @@ class GarminIngestor(IngestorBase):
         session: Session,
         garmin_mapped: dict[str, Any],
         log: BoundLogger,
-    ) -> bool:
+    ) -> Activity | None:
+        """Fold a Garmin activity into an overlapping Strava row.
+
+        Returns the Strava row that absorbed it, so the caller can hang lap and
+        exercise-set detail off the same id, or None when there is no match.
+        """
         start_time = garmin_mapped["start_time"]
         window = timedelta(seconds=STRAVA_DEDUPE_WINDOW_SECONDS)
         strava = session.scalar(
@@ -479,7 +612,7 @@ class GarminIngestor(IngestorBase):
             )
         )
         if strava is None:
-            return False
+            return None
         strava.garmin_supplement = garmin_mapped["raw"]
         for field in GARMIN_PRIORITY_FIELDS:
             value = garmin_mapped.get(field)
@@ -494,7 +627,85 @@ class GarminIngestor(IngestorBase):
             strava_source_id=strava.source_id,
             garmin_source_id=garmin_mapped["source_id"],
         )
-        return True
+        return strava
+
+    def _sync_activity_detail(
+        self,
+        client: Any,
+        session: Session,
+        activity: dict[str, Any],
+        mapped: dict[str, Any],
+        row: Activity | None,
+        log: BoundLogger,
+    ) -> None:
+        """Store the per-lap / per-set breakdown behind one activity.
+
+        Each endpoint is one extra request per activity, so both are gated on
+        flags from the activity list rather than fetched blindly, and both go
+        through ``_safe_call``: a detail endpoint that 404s must cost its own
+        activity's breakdown and nothing more.
+        """
+        wants_laps = mapped["sport_type"] in LAP_DETAIL_SPORTS and bool(
+            activity.get("hasIntensityIntervals")
+        )
+        wants_sets = mapped["sport_type"] == "lifting"
+        if not wants_laps and not wants_sets:
+            return
+
+        activity_row = row if row is not None else self._find_activity(session, mapped)
+        if activity_row is None:
+            log.warning("garmin.activity.detail_row_missing", source_id=mapped["source_id"])
+            return
+
+        source_id = mapped["source_id"]
+        detail_log = log.bind(garmin_activity_id=source_id)
+
+        if wants_laps:
+            splits = self._safe_call(
+                client.get_activity_splits, source_id, detail_log, "activity_splits"
+            )
+            laps = _parse_laps(splits)
+            if laps:
+                self._replace_children(session, ActivityLap, activity_row.id, laps)
+                detail_log.info("garmin.activity.laps_stored", count=len(laps))
+
+        if wants_sets:
+            payload = self._safe_call(
+                client.get_activity_exercise_sets, source_id, detail_log, "exercise_sets"
+            )
+            sets = _parse_exercise_sets(payload)
+            if sets:
+                self._replace_children(session, ActivityExerciseSet, activity_row.id, sets)
+                detail_log.info(
+                    "garmin.activity.exercise_sets_stored",
+                    count=len(sets),
+                    with_weight=sum(1 for entry in sets if entry["weight_kg"] is not None),
+                )
+
+    def _find_activity(self, session: Session, mapped: dict[str, Any]) -> Activity | None:
+        return session.scalar(
+            select(Activity).where(
+                Activity.source == mapped["source"],
+                Activity.source_id == mapped["source_id"],
+            )
+        )
+
+    def _replace_children(
+        self,
+        session: Session,
+        model: type[ActivityLap] | type[ActivityExerciseSet],
+        activity_id: UUID,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        """Delete-then-insert the child rows for one activity.
+
+        Upserting on (activity_id, index) would leave orphans behind whenever
+        Garmin drops a lap — which happens when an activity is edited in
+        Connect. Replacing wholesale keeps the stored breakdown equal to what
+        Garmin currently reports, which is what idempotent means here.
+        """
+        session.execute(delete(model).where(model.activity_id == activity_id))
+        session.add_all([model(activity_id=activity_id, **row) for row in rows])
 
     def _map_activity(self, activity: dict[str, Any], start_time: datetime) -> dict[str, Any]:
         duration = activity.get("duration")
@@ -608,17 +819,25 @@ class GarminIngestor(IngestorBase):
     def _safe_call(
         self,
         func: Callable[[str], Any],
-        iso_date: str,
+        arg: str,
         log: BoundLogger,
         endpoint: str,
     ) -> Any:
+        """Call one Garmin endpoint, trading a failure for None.
+
+        Garmin throws on endpoints that simply hold no data — a day with no
+        HRV reading, an activity with no splits. Used for both the daily
+        endpoints (``arg`` is an ISO date) and the per-activity detail ones
+        (``arg`` is the Garmin activity id); either way one dead endpoint must
+        not take the whole sync down with it.
+        """
         try:
-            return func(iso_date)
+            return func(arg)
         except Exception as exc:  # noqa: BLE001 -- Garmin endpoints throw on missing data
             log.warning(
-                "garmin.daily.endpoint_failed",
+                "garmin.endpoint_failed",
                 endpoint=endpoint,
-                date=iso_date,
+                arg=arg,
                 error=str(exc),
             )
             return None

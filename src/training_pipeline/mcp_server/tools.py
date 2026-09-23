@@ -22,6 +22,8 @@ from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
     Activity,
+    ActivityExerciseSet,
+    ActivityLap,
     AthleteContext,
     BodyMeasurement,
     DailySummary,
@@ -104,6 +106,57 @@ def _serialize_activity(activity: Activity, log: ManualLog | None) -> dict[str, 
     }
 
 
+def _serialize_laps(session: Session, activity_id: UUID) -> list[dict[str, Any]]:
+    laps = session.scalars(
+        select(ActivityLap)
+        .where(ActivityLap.activity_id == activity_id)
+        .order_by(ActivityLap.lap_index)
+    )
+    return [
+        {
+            "lap_index": lap.lap_index,
+            "lap_type": lap.lap_type,
+            "duration_s": lap.duration_s,
+            "duration_min": (
+                round(lap.duration_s / 60.0, 2) if lap.duration_s is not None else None
+            ),
+            "moving_duration_s": lap.moving_duration_s,
+            "distance_km": (
+                round(lap.distance_meters / 1000.0, 3) if lap.distance_meters is not None else None
+            ),
+            "avg_power": lap.avg_power,
+            "max_power": lap.max_power,
+            "normalized_power": lap.normalized_power,
+            "avg_hr": lap.avg_hr,
+            "max_hr": lap.max_hr,
+            "avg_cadence": lap.avg_cadence,
+        }
+        for lap in laps
+    ]
+
+
+def _serialize_exercise_sets(session: Session, activity_id: UUID) -> list[dict[str, Any]]:
+    sets = session.scalars(
+        select(ActivityExerciseSet)
+        .where(ActivityExerciseSet.activity_id == activity_id)
+        .order_by(ActivityExerciseSet.set_index)
+    )
+    return [
+        {
+            "set_index": s.set_index,
+            "set_type": s.set_type,
+            # Garmin classifies the movement rather than being told it, so this
+            # is a guess — read it together with exercise_confidence.
+            "exercise_name": s.exercise_name,
+            "exercise_confidence": s.exercise_confidence,
+            "reps": s.reps,
+            "weight_kg": s.weight_kg,
+            "duration_s": s.duration_s,
+        }
+        for s in sets
+    ]
+
+
 def _latest_log_for(session: Session, activity_id: UUID) -> ManualLog | None:
     return session.scalar(
         select(ManualLog)
@@ -158,8 +211,23 @@ def _get_activity_by_id(session: Session, activity_id: str) -> dict[str, Any] | 
         return None
     log = _latest_log_for(session, activity.id)
     payload = _serialize_activity(activity, log)
+    # Per-lap and per-set detail when the ingestor captured it. Both stay out
+    # of the list-shaped tools: they are only worth the rows once a single
+    # session is being looked at.
+    laps = _serialize_laps(session, activity.id)
+    exercise_sets = _serialize_exercise_sets(session, activity.id)
+    if laps:
+        payload["laps"] = laps
+    if exercise_sets:
+        payload["exercise_sets"] = exercise_sets
     payload["raw"] = activity.raw
-    logger.info("mcp.get_activity_by_id", activity_id=activity_id, found=True)
+    logger.info(
+        "mcp.get_activity_by_id",
+        activity_id=activity_id,
+        found=True,
+        lap_count=len(laps),
+        exercise_set_count=len(exercise_sets),
+    )
     return payload
 
 

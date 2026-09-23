@@ -81,6 +81,85 @@ class Activity(Base):
     )
 
 
+class ActivityLap(Base):
+    """One lap of an activity, as the watch recorded it.
+
+    Session averages cannot distinguish a 4x8 interval ride from a steady ride
+    of the same duration and average power. ``lap_type`` (Garmin's
+    ``intensityType``) plus per-lap power is what makes the structure readable.
+    """
+
+    __tablename__ = "activity_laps"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    activity_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("activities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    lap_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    lap_type: Mapped[str | None] = mapped_column(Text)
+    duration_s: Mapped[float | None] = mapped_column(REAL)
+    moving_duration_s: Mapped[float | None] = mapped_column(REAL)
+    distance_meters: Mapped[float | None] = mapped_column(REAL)
+    avg_power: Mapped[int | None] = mapped_column(SmallInteger)
+    max_power: Mapped[int | None] = mapped_column(SmallInteger)
+    normalized_power: Mapped[int | None] = mapped_column(SmallInteger)
+    avg_hr: Mapped[int | None] = mapped_column(SmallInteger)
+    max_hr: Mapped[int | None] = mapped_column(SmallInteger)
+    avg_cadence: Mapped[int | None] = mapped_column(SmallInteger)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("activity_id", "lap_index", name="uq_activity_laps_activity_lap"),
+    )
+
+
+class ActivityExerciseSet(Base):
+    """One set of a strength session, including the rest blocks between them.
+
+    Garmin auto-detects the movement rather than being told it, and answers
+    with a ranked candidate list; ``exercise_name`` is the top candidate and
+    ``exercise_confidence`` its probability. ``weight_kg`` is only populated
+    when a load was entered in Garmin Connect — the watch cannot measure it.
+    """
+
+    __tablename__ = "activity_exercise_sets"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    activity_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("activities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    set_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    set_type: Mapped[str | None] = mapped_column(Text)
+    exercise_name: Mapped[str | None] = mapped_column(Text)
+    exercise_confidence: Mapped[float | None] = mapped_column(REAL)
+    reps: Mapped[int | None] = mapped_column(SmallInteger)
+    weight_kg: Mapped[float | None] = mapped_column(REAL)
+    duration_s: Mapped[float | None] = mapped_column(REAL)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("activity_id", "set_index", name="uq_activity_exercise_sets_activity_set"),
+    )
+
+
 class BodyMeasurement(Base):
     __tablename__ = "body_measurements"
 
