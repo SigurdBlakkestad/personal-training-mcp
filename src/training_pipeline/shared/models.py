@@ -238,3 +238,22 @@ class IngestionRun(Base):
     records_updated: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     error: Mapped[str | None] = mapped_column(Text)
     cursor: Mapped[str | None] = mapped_column(Text)
+
+
+class ServiceCredential(Base):
+    """Mutable auth state for an external source, keyed by source name.
+
+    Garmin's DI flow rotates the refresh token on every refresh and invalidates
+    the previous one. A static secret replayed by a stateless CI runner is
+    therefore single-use: it works until the access token first expires, then
+    401s forever. The rotated token has to land somewhere durable, and this is
+    it.
+    """
+
+    __tablename__ = "service_credentials"
+
+    service: Mapped[str] = mapped_column(Text, primary_key=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

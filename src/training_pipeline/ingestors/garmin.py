@@ -9,17 +9,20 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from structlog.stdlib import BoundLogger
 
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
 from training_pipeline.shared.config import get_settings
+from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
-from training_pipeline.shared.models import Activity, IngestionRun
+from training_pipeline.shared.models import Activity, IngestionRun, ServiceCredential
 
 logger = get_logger(__name__)
 
+GARMIN_CREDENTIAL_SERVICE = "garmin"
 GARMIN_DEFAULT_LOOKBACK_DAYS = 30
 GARMIN_PAGE_SIZE = 20
 STRAVA_DEDUPE_WINDOW_SECONDS = 60
@@ -160,6 +163,52 @@ def decode_tokens_to_dir(b64: str) -> str:
     return tmp_dir
 
 
+def load_stored_tokens() -> str | None:
+    """Return the persisted tokenstore payload, or None before the first run."""
+    with get_session() as session:
+        return session.scalar(
+            select(ServiceCredential.payload).where(
+                ServiceCredential.service == GARMIN_CREDENTIAL_SERVICE
+            )
+        )
+
+
+def save_stored_tokens(payload: str) -> None:
+    """Upsert the tokenstore payload in a transaction of its own.
+
+    Deliberately not the ingestion session: Garmin invalidates the previous
+    refresh token the moment it issues a new one, so a rotation that is rolled
+    back with a failed sync leaves the next run replaying a dead token.
+    """
+    with get_session() as session:
+        stmt = pg_insert(ServiceCredential).values(
+            service=GARMIN_CREDENTIAL_SERVICE,
+            payload=payload,
+        )
+        session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["service"],
+                set_={"payload": stmt.excluded.payload, "updated_at": func.now()},
+            )
+        )
+
+
+def _serialize_tokens(client: Any) -> str | None:
+    """Serialize the client's current tokens, including any rotation that
+    happened during login or a mid-sync refresh.
+
+    Returns None for injected doubles: the ``client``/``client_factory`` seams
+    accept any object, and a MagicMock answers ``client.dumps()`` with another
+    mock rather than a payload worth storing.
+    """
+    inner = getattr(client, "client", None)
+    dumps = getattr(inner, "dumps", None)
+    if dumps is None:
+        return None
+    payload = dumps()
+    return payload if isinstance(payload, str) else None
+
+
 def _extract_sleep_score(sleep: Any) -> int | None:
     if not isinstance(sleep, dict):
         return None
@@ -273,6 +322,7 @@ class GarminIngestor(IngestorBase):
         self._client_factory = client_factory
         self._now = now
         self._backfill = backfill
+        self._persisted_tokens: str | None = None
 
     @property
     def name(self) -> str:
@@ -290,8 +340,14 @@ class GarminIngestor(IngestorBase):
         log.info("garmin.fetch.start", since=effective_since.isoformat())
 
         result = IngestionResult()
-        self._sync_activities(client, session, effective_since, result, log)
-        self._sync_daily_summaries(client, session, effective_since, result, log)
+        try:
+            self._sync_activities(client, session, effective_since, result, log)
+            self._sync_daily_summaries(client, session, effective_since, result, log)
+        finally:
+            # A stale access token is refreshed mid-sync too, rotating the
+            # refresh token again. Persist whatever the client ended up holding,
+            # including when the sync itself failed.
+            self._persist_tokens(client, log)
 
         log.info(
             "garmin.fetch.done",
@@ -302,20 +358,49 @@ class GarminIngestor(IngestorBase):
         return result
 
     def _initialize_client(self) -> Any:
-        settings = get_settings()
-        if not settings.GARMINTOKENS_B64:
-            raise RuntimeError(
-                "GARMINTOKENS_B64 is not set. Run scripts/garmin_auth.py locally first."
-            )
-        tokens_path = decode_tokens_to_dir(settings.GARMINTOKENS_B64)
+        tokenstore = self._load_tokenstore()
         if self._client_factory is not None:
-            return self._client_factory(tokens_path)
+            return self._client_factory(tokenstore)
 
         from garminconnect import Garmin  # type: ignore[import-untyped]
 
         client = Garmin()
-        client.login(tokenstore=tokens_path)
+        client.login(tokenstore=tokenstore)
+        # login() refreshes when the access token is stale, and that refresh
+        # already rotated the token Garmin will accept next time. Store it
+        # before the sync gets a chance to fail.
+        self._persist_tokens(client, logger.bind(source="garmin"))
         return client
+
+    def _load_tokenstore(self) -> str:
+        """Return a tokenstore garminconnect accepts.
+
+        ``login`` takes either inline JSON or a filesystem path, so the stored
+        payload goes straight through without ever touching disk. The
+        GARMINTOKENS_B64 secret is only the seed for the first run — once a
+        token has been stored it is the source of truth, because the secret
+        still holds whatever Garmin has since invalidated.
+        """
+        stored = load_stored_tokens()
+        if stored:
+            self._persisted_tokens = stored
+            return stored
+
+        settings = get_settings()
+        if not settings.GARMINTOKENS_B64:
+            raise RuntimeError(
+                "No stored Garmin tokens and GARMINTOKENS_B64 is not set. "
+                "Run scripts/garmin_auth.py locally first."
+            )
+        return decode_tokens_to_dir(settings.GARMINTOKENS_B64)
+
+    def _persist_tokens(self, client: Any, log: BoundLogger) -> None:
+        payload = _serialize_tokens(client)
+        if payload is None or payload == self._persisted_tokens:
+            return
+        save_stored_tokens(payload)
+        self._persisted_tokens = payload
+        log.info("garmin.tokens.persisted")
 
     def _compute_since(self, session: Session) -> datetime:
         latest = session.scalar(

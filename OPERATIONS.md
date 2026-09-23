@@ -30,7 +30,7 @@ All on GitHub Actions. View runs at `github.com/<user>/personal-training-mcp/act
 
 ## Annual rhythm (you)
 
-- **Garmin re-bootstrap:** the Garmin OAuth1 refresh token expires after ~1 year. When `sync_garmin.yml` starts failing with auth errors, run `python scripts/garmin_auth.py` locally and update the `GARMINTOKENS_B64` secret.
+- **Garmin re-bootstrap:** each run rotates and stores the Garmin refresh token, so no routine rotation is needed. When `sync_garmin.yml` starts failing with auth errors, follow "Garmin workflow failing" below — re-bootstrapping the secret alone is not enough, the stored row has to be cleared too.
 
 ---
 
@@ -54,14 +54,20 @@ If both tokens are completely expired (unused for months), re-run `python script
 
 ### "Garmin workflow failing"
 
-Garmin breaks in two ways: token expired (~yearly) or Garmin changed their auth (also rare but happens).
+Garmin breaks in two ways: the stored token gets rejected, or Garmin changed their auth (also rare but happens).
 
-**Token expired:**
+**Where the live token lives:** the `garmin` row in `service_credentials`, not the `GARMINTOKENS_B64` secret. Garmin's DI flow issues a new refresh token on every refresh and invalidates the previous one, so each run writes back whatever the client ends up holding. The secret is only the seed used when that row doesn't exist yet.
+
+**Token rejected (`API Error 401`, "Failed to retrieve social profile"):**
 1. Locally: `python scripts/garmin_auth.py`
 2. Complete MFA prompt
 3. Copy the base64 output
 4. Update `GARMINTOKENS_B64` secret
-5. Re-trigger workflow
+5. Clear the rejected row so the fresh seed is picked up:
+   `delete from service_credentials where service = 'garmin';`
+6. Re-trigger workflow
+
+Skipping step 5 leaves the run on the rejected token and the new secret is ignored.
 
 **Garmin changed their auth:**
 1. Check https://github.com/cyberjunky/python-garminconnect/issues for current status
@@ -69,7 +75,7 @@ Garmin breaks in two ways: token expired (~yearly) or Garmin changed their auth 
 3. Bump version in `requirements.txt` when fix is released
 4. Re-bootstrap with `scripts/garmin_auth.py` (the new version may need a fresh login)
 
-Garmin is isolated with `continue-on-error: true` — other workflows keep running. Don't panic-fix.
+Garmin has its own workflow, so a red run never blocks the other syncs. Don't panic-fix.
 
 ### "Notion mirror failing with rate limit (429)"
 
@@ -103,7 +109,7 @@ Treat all credentials as rotatable. Practical timeline:
 
 - **Strava refresh tokens:** rotate automatically with each token refresh. Update the secret when the workflow logs a rotation warning.
 - **Withings refresh tokens:** same — log-triggered.
-- **Garmin tokens:** re-bootstrap annually or when the workflow starts failing.
+- **Garmin tokens:** rotate on every refresh and are stored in `service_credentials`, so they need no manual upkeep. Re-bootstrap only when the workflow starts failing on auth.
 - **Supabase database password:** rotate via Supabase dashboard if you ever suspect exposure. Update `DATABASE_URL` secret immediately.
 - **Notion integration token:** stable until you revoke it. If suspected exposure, revoke via Notion settings and generate a new one.
 - **Strava client secret, Withings client secret:** stable. Only rotate if exposed.
