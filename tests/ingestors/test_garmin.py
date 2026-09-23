@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.orm import Session
@@ -25,9 +26,13 @@ from training_pipeline.ingestors.garmin import (
     _extract_sleep_score,
     _extract_vo2_max,
     _normalize_sport,
+    _parse_exercise_sets,
     _parse_garmin_time,
+    _parse_laps,
+    _top_exercise,
     decode_tokens_to_dir,
 )
+from training_pipeline.shared.models import ActivityExerciseSet, ActivityLap
 
 
 def _garmin_activity(
@@ -195,7 +200,7 @@ def test_sync_activities_inserts_new_activity_when_no_strava_match() -> None:
 
     ingestor = GarminIngestor(client=client)
     ingestor._activity_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
-    ingestor._merge_into_strava_if_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
     captured: list[dict[str, Any]] = []
     original_upsert = ingestor.upsert_activity
 
@@ -229,7 +234,7 @@ def test_sync_activities_stops_when_existing_id_seen() -> None:
     ingestor._activity_exists = MagicMock(  # type: ignore[method-assign]
         side_effect=lambda s, sid: sid in seen
     )
-    ingestor._merge_into_strava_if_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     session = _make_session()
     result = IngestionResult()
@@ -249,7 +254,7 @@ def test_sync_activities_stops_when_older_than_since() -> None:
     ]
     ingestor = GarminIngestor(client=client)
     ingestor._activity_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
-    ingestor._merge_into_strava_if_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     session = _make_session()
     result = IngestionResult()
@@ -321,7 +326,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
 
     merged = ingestor._merge_into_strava_if_exists(session, garmin_mapped, MagicMock())
 
-    assert merged is True
+    assert merged is strava_row
     assert strava_row.raw == {"id": 99}  # untouched
     assert strava_row.garmin_supplement == garmin_mapped["raw"]
     # Garmin device measurements and the user-set name win
@@ -396,7 +401,7 @@ def test_merge_into_strava_skips_garmin_priority_fields_when_null_in_payload() -
     assert strava_row.normalized_power == 220
 
 
-def test_merge_into_strava_returns_false_when_no_match() -> None:
+def test_merge_into_strava_returns_none_when_no_match() -> None:
     ingestor = GarminIngestor(client=MagicMock())
     garmin_mapped = {
         "source": "garmin",
@@ -407,7 +412,7 @@ def test_merge_into_strava_returns_false_when_no_match() -> None:
     session = MagicMock(spec=Session)
     session.scalar.return_value = None
 
-    assert ingestor._merge_into_strava_if_exists(session, garmin_mapped, MagicMock()) is False
+    assert ingestor._merge_into_strava_if_exists(session, garmin_mapped, MagicMock()) is None
 
 
 def test_extract_sleep_score_handles_shapes() -> None:
@@ -547,7 +552,7 @@ def test_sync_activities_backfill_does_not_stop_on_existing_id() -> None:
     ingestor = GarminIngestor(client=client, backfill=True)
     # Pretend all activities already exist; backfill should re-process them anyway.
     ingestor._activity_exists = MagicMock(return_value=True)  # type: ignore[method-assign]
-    ingestor._merge_into_strava_if_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     session = _make_session()
     result = IngestionResult()
@@ -726,7 +731,7 @@ def test_sync_activities_paginates_until_short_page() -> None:
 
     ingestor = GarminIngestor(client=client)
     ingestor._activity_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
-    ingestor._merge_into_strava_if_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     session = _make_session()
     result = IngestionResult()
@@ -737,3 +742,368 @@ def test_sync_activities_paginates_until_short_page() -> None:
     assert result.records_processed == GARMIN_PAGE_SIZE + 1
     # Should have made exactly 2 pagination calls (second one returns short page → stop)
     assert client.get_activities.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Lap / exercise-set detail
+#
+# The payloads below are trimmed copies of real Garmin responses (activities
+# 24436612923, a 4x8 indoor ride, and 24459270339, a strength session), keeping
+# the key names and the null-heavy shape the live API actually returns.
+# ---------------------------------------------------------------------------
+
+
+def _splits_response() -> dict[str, Any]:
+    def lap(
+        index: int,
+        intensity: str,
+        duration: float,
+        avg_power: float,
+        max_power: float,
+        avg_hr: float,
+        cadence: float,
+    ) -> dict[str, Any]:
+        return {
+            "lapIndex": index,
+            "messageIndex": index - 1,
+            "intensityType": intensity,
+            "duration": duration,
+            "elapsedDuration": duration,
+            "movingDuration": duration,
+            "distance": 2813.62,
+            "averagePower": avg_power,
+            "maxPower": max_power,
+            "minPower": 0.0,
+            "normalizedPower": avg_power - 2,
+            "averageHR": avg_hr,
+            "maxHR": avg_hr + 7,
+            "averageBikeCadence": cadence,
+            "maxBikeCadence": cadence + 8,
+            "calories": 150.0,
+        }
+
+    return {
+        "activityId": 24436612923,
+        "lapDTOs": [
+            lap(1, "WARMUP", 300.0, 101.0, 103.0, 109.0, 69.0),
+            lap(2, "ACTIVE", 480.0, 193.0, 198.0, 149.0, 75.0),
+            lap(3, "RECOVERY", 162.155, 81.0, 193.0, 127.0, 60.0),
+            lap(4, "COOLDOWN", 232.26, 81.0, 193.0, 122.0, 62.0),
+        ],
+        "eventDTOs": [],
+    }
+
+
+def _exercise_sets_response() -> dict[str, Any]:
+    return {
+        "activityId": 24459270339,
+        "exerciseSets": [
+            {
+                "exercises": [
+                    {"category": "BENCH_PRESS", "name": None, "probability": 99.609375},
+                    {"category": "SHOULDER_PRESS", "name": None, "probability": 79.6875},
+                    {"category": "UNKNOWN", "name": None, "probability": 19.921875},
+                ],
+                "duration": 128.7,
+                "repetitionCount": 12,
+                "weight": 40000.0,
+                "setType": "ACTIVE",
+                "startTime": "2026-09-22T16:24:37.0",
+                "messageIndex": 0,
+                "wktStepIndex": None,
+            },
+            {
+                "exercises": [],
+                "duration": 115.37,
+                "repetitionCount": None,
+                "weight": None,
+                "setType": "REST",
+                "startTime": "2026-09-22T16:31:49.0",
+                "messageIndex": 1,
+                "wktStepIndex": None,
+            },
+            {
+                "exercises": [
+                    {"category": "PUSH_UP", "name": None, "probability": 59.765625},
+                    {
+                        "category": "TRICEPS_EXTENSION",
+                        "name": "BENCH_DIP",
+                        "probability": 89.453125,
+                    },
+                    {"category": "UNKNOWN", "name": None, "probability": 39.84375},
+                ],
+                "duration": 32.0,
+                "repetitionCount": 13,
+                # Garmin's "no load recorded" placeholder, seen on real sets.
+                "weight": 0.0,
+                "setType": "ACTIVE",
+                "startTime": "2026-09-22T16:45:10.0",
+                "messageIndex": 2,
+                "wktStepIndex": None,
+            },
+        ],
+    }
+
+
+def test_parse_laps_maps_power_and_intensity() -> None:
+    rows = _parse_laps(_splits_response())
+
+    assert [r["lap_index"] for r in rows] == [1, 2, 3, 4]
+    assert [r["lap_type"] for r in rows] == ["WARMUP", "ACTIVE", "RECOVERY", "COOLDOWN"]
+
+    work = rows[1]
+    assert work["duration_s"] == 480.0
+    assert work["avg_power"] == 193
+    assert work["max_power"] == 198
+    assert work["normalized_power"] == 191
+    assert work["avg_hr"] == 149
+    assert work["max_hr"] == 156
+    # Per-lap cadence lives under averageBikeCadence, not the session-level
+    # averageBikingCadenceInRevPerMinute.
+    assert work["avg_cadence"] == 75
+    assert work["distance_meters"] == pytest.approx(2813.62)
+
+
+def test_parse_laps_falls_back_to_position_when_lap_index_missing() -> None:
+    rows = _parse_laps({"lapDTOs": [{"duration": 60.0}, {"duration": 90.0}]})
+    assert [r["lap_index"] for r in rows] == [1, 2]
+
+
+def test_parse_laps_handles_missing_and_malformed_payloads() -> None:
+    assert _parse_laps(None) == []
+    assert _parse_laps({}) == []
+    assert _parse_laps({"lapDTOs": None}) == []
+    assert _parse_laps({"lapDTOs": ["not-a-lap"]}) == []
+
+
+def test_top_exercise_picks_highest_probability_candidate() -> None:
+    name, confidence = _top_exercise(
+        [
+            {"category": "BENCH_PRESS", "name": None, "probability": 79.6875},
+            {"category": "SHOULDER_PRESS", "name": None, "probability": 79.6875},
+            {"category": "UNKNOWN", "name": None, "probability": 19.921875},
+        ]
+    )
+    assert name == "BENCH_PRESS"
+    assert confidence == pytest.approx(79.6875)
+
+
+def test_top_exercise_keeps_unknown_when_it_genuinely_leads() -> None:
+    """A real shape: the watch is sure it does not recognise the movement.
+
+    Naming the 0%-probability runner-up would invent a movement nobody
+    claimed, so UNKNOWN has to survive.
+    """
+    name, confidence = _top_exercise(
+        [
+            {"category": "UNKNOWN", "name": None, "probability": 99.609375},
+            {"category": "CURL", "name": None, "probability": 0.0},
+            {"category": "BENCH_PRESS", "name": None, "probability": 0.0},
+        ]
+    )
+    assert name == "UNKNOWN"
+    assert confidence == pytest.approx(99.609375)
+
+
+def test_top_exercise_breaks_ties_towards_the_named_candidate() -> None:
+    name, _ = _top_exercise(
+        [
+            {"category": "UNKNOWN", "name": None, "probability": 50.0},
+            {"category": "PUSH_UP", "name": None, "probability": 50.0},
+        ]
+    )
+    assert name == "PUSH_UP"
+
+
+def test_top_exercise_includes_sub_category_when_present() -> None:
+    name, _ = _top_exercise(
+        [{"category": "TRICEPS_EXTENSION", "name": "BENCH_DIP", "probability": 89.5}]
+    )
+    assert name == "TRICEPS_EXTENSION/BENCH_DIP"
+
+
+def test_top_exercise_handles_empty_and_malformed() -> None:
+    assert _top_exercise([]) == (None, None)
+    assert _top_exercise(None) == (None, None)
+    assert _top_exercise(["nope"]) == (None, None)
+
+
+def test_parse_exercise_sets_maps_reps_weight_and_rest() -> None:
+    rows = _parse_exercise_sets(_exercise_sets_response())
+
+    assert [r["set_index"] for r in rows] == [0, 1, 2]
+    assert [r["set_type"] for r in rows] == ["ACTIVE", "REST", "ACTIVE"]
+
+    first = rows[0]
+    assert first["exercise_name"] == "BENCH_PRESS"
+    assert first["exercise_confidence"] == pytest.approx(99.609375)
+    assert first["reps"] == 12
+    assert first["weight_kg"] == pytest.approx(40.0)  # grams on the wire
+    assert first["duration_s"] == pytest.approx(128.7)
+
+    # Rest blocks are kept — rest length is half of a readable strength session.
+    rest = rows[1]
+    assert rest["reps"] is None
+    assert rest["exercise_name"] is None
+    assert rest["duration_s"] == pytest.approx(115.37)
+
+    # A 0 g weight is Garmin's placeholder, not a real bodyweight load.
+    assert rows[2]["weight_kg"] is None
+    assert rows[2]["exercise_name"] == "TRICEPS_EXTENSION/BENCH_DIP"
+
+
+def test_parse_exercise_sets_handles_missing_and_malformed_payloads() -> None:
+    assert _parse_exercise_sets(None) == []
+    assert _parse_exercise_sets({}) == []
+    assert _parse_exercise_sets({"exerciseSets": None}) == []
+    assert _parse_exercise_sets({"exerciseSets": ["nope"]}) == []
+
+
+def _detail_ingestor_and_row() -> tuple[GarminIngestor, MagicMock]:
+    ingestor = GarminIngestor(client=MagicMock())
+    row = MagicMock()
+    row.id = uuid4()
+    return ingestor, row
+
+
+def test_sync_activity_detail_stores_laps_for_interval_ride() -> None:
+    ingestor, row = _detail_ingestor_and_row()
+    client = MagicMock()
+    client.get_activity_splits.return_value = _splits_response()
+    session = _make_session()
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 24436612923, "hasIntensityIntervals": True},
+        {"source": "garmin", "source_id": "24436612923", "sport_type": "cycling"},
+        row,
+        MagicMock(),
+    )
+
+    client.get_activity_splits.assert_called_once_with("24436612923")
+    client.get_activity_exercise_sets.assert_not_called()
+    added = session.add_all.call_args[0][0]
+    assert len(added) == 4
+    assert all(isinstance(lap, ActivityLap) for lap in added)
+    assert added[1].avg_power == 193
+    assert added[1].activity_id == row.id
+    # Replace, not merge: stale laps are cleared first.
+    session.execute.assert_called_once()
+
+
+def test_sync_activity_detail_skips_ride_without_intensity_intervals() -> None:
+    ingestor, row = _detail_ingestor_and_row()
+    client = MagicMock()
+    session = _make_session()
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 1, "hasIntensityIntervals": False},
+        {"source": "garmin", "source_id": "1", "sport_type": "cycling"},
+        row,
+        MagicMock(),
+    )
+
+    client.get_activity_splits.assert_not_called()
+    session.add_all.assert_not_called()
+
+
+def test_sync_activity_detail_stores_exercise_sets_for_lifting() -> None:
+    ingestor, row = _detail_ingestor_and_row()
+    client = MagicMock()
+    client.get_activity_exercise_sets.return_value = _exercise_sets_response()
+    session = _make_session()
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 24459270339},
+        {"source": "garmin", "source_id": "24459270339", "sport_type": "lifting"},
+        row,
+        MagicMock(),
+    )
+
+    client.get_activity_exercise_sets.assert_called_once_with("24459270339")
+    client.get_activity_splits.assert_not_called()
+    added = session.add_all.call_args[0][0]
+    assert len(added) == 3
+    assert all(isinstance(s, ActivityExerciseSet) for s in added)
+    assert added[0].reps == 12
+    assert added[0].weight_kg == pytest.approx(40.0)
+
+
+def test_sync_activity_detail_survives_a_failing_endpoint() -> None:
+    ingestor, row = _detail_ingestor_and_row()
+    client = MagicMock()
+    client.get_activity_exercise_sets.side_effect = RuntimeError("500 from Garmin")
+    session = _make_session()
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 7},
+        {"source": "garmin", "source_id": "7", "sport_type": "lifting"},
+        row,
+        MagicMock(),
+    )
+
+    session.add_all.assert_not_called()
+
+
+def test_sync_activity_detail_skips_sports_without_detail() -> None:
+    ingestor, row = _detail_ingestor_and_row()
+    client = MagicMock()
+    session = _make_session()
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 3, "hasIntensityIntervals": True},
+        {"source": "garmin", "source_id": "3", "sport_type": "running"},
+        row,
+        MagicMock(),
+    )
+
+    client.get_activity_splits.assert_not_called()
+    client.get_activity_exercise_sets.assert_not_called()
+
+
+def test_sync_activity_detail_looks_up_row_when_not_merged() -> None:
+    ingestor, row = _detail_ingestor_and_row()
+    client = MagicMock()
+    client.get_activity_exercise_sets.return_value = _exercise_sets_response()
+    session = _make_session()
+    session.scalar.return_value = row
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 9},
+        {"source": "garmin", "source_id": "9", "sport_type": "lifting"},
+        None,
+        MagicMock(),
+    )
+
+    assert session.add_all.call_args[0][0][0].activity_id == row.id
+
+
+def test_sync_activity_detail_warns_when_row_cannot_be_found() -> None:
+    ingestor, _ = _detail_ingestor_and_row()
+    client = MagicMock()
+    session = _make_session()
+    session.scalar.return_value = None
+    log = MagicMock()
+
+    ingestor._sync_activity_detail(
+        client,
+        session,
+        {"activityId": 9},
+        {"source": "garmin", "source_id": "9", "sport_type": "lifting"},
+        None,
+        log,
+    )
+
+    client.get_activity_exercise_sets.assert_not_called()
+    log.warning.assert_called_once()
