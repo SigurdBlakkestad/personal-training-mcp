@@ -8,6 +8,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -29,3 +32,20 @@ jobs:
           STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
           LOG_LEVEL: INFO
         run: python -m training_pipeline.cli sync --source strava
+
+      # The workflow is disabled while Strava's API is subscriber-only, so this
+      # normally never fires. It is wired up anyway so that re-enabling the
+      # workflow does not also mean remembering to re-add the alerting.
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Strava sync
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            Strava's API has been subscriber-only since mid-2026. Without an
+            active subscription the app is deactivated and every activity call
+            returns `403` (`Application/Status/Inactive`) — token refresh still
+            returns 200, so a working refresh is not evidence the sync works,
+            and re-authorising does not help. Garmin is the primary activity
+            source; this workflow stays disabled until a subscription is active.
