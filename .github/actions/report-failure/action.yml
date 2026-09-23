@@ -14,7 +14,12 @@ inputs:
       failing Garmin sync never suppresses the alert for a failing Notion mirror.
     required: true
   outcome:
-    description: Pass ${{ job.status }} — success closes, failure files, cancelled is ignored.
+    # Do not write the job.status expression here in interpolated form. GitHub
+    # evaluates expressions anywhere in an action manifest, including
+    # descriptions, and the job context does not exist inside a composite
+    # action — the manifest then fails validation and the action does not load
+    # at all, which turns every green run red at its final step.
+    description: The caller passes the job status expression; success closes, failure files, cancelled is ignored.
     required: true
   token:
     description: GITHUB_TOKEN. Composite actions get no secrets of their own, so it has to be passed in.
