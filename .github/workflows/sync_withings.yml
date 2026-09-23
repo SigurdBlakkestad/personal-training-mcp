@@ -8,6 +8,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -31,3 +34,15 @@ jobs:
           WITHINGS_USERID: ${{ secrets.WITHINGS_USERID }}
           LOG_LEVEL: INFO
         run: python -m training_pipeline.cli sync --source withings
+
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Withings sync
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            Usually a rotated refresh token. Check the log for the new value and
+            update the `WITHINGS_REFRESH_TOKEN` and `WITHINGS_ACCESS_TOKEN`
+            secrets. If both are long expired, re-bootstrap with
+            `python scripts/withings_auth.py`. See OPERATIONS.md.

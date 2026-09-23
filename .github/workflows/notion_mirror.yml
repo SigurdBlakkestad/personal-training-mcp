@@ -8,6 +8,9 @@ on:
 jobs:
   mirror:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -30,3 +33,15 @@ jobs:
           NOTION_DB_METRICS_ID: ${{ secrets.NOTION_DB_METRICS_ID }}
           LOG_LEVEL: INFO
         run: python -m training_pipeline.cli notion-mirror
+
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Notion mirror
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            Postgres stays correct while this is red — only the readable Notion
+            views go stale. Common causes: a 429 rate limit (see OPERATIONS.md),
+            a revoked `NOTION_TOKEN`, or a database the integration lost access
+            to after being moved in Notion.

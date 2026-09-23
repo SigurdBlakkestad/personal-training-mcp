@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   publish:
@@ -60,3 +61,15 @@ jobs:
           done
           echo "Push failed after 5 attempts."
           exit 1
+
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Calendar publish
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            The iPhone calendar feed stops updating, so the phone quietly shows
+            an old plan. Either `publish-calendar` failed to regenerate
+            `docs/training.ics`, or the commit lost the push race five times in
+            a row — the run log says which.

@@ -8,6 +8,9 @@ on:
 jobs:
   compute:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -27,3 +30,15 @@ jobs:
           ATHLETE_FTP: ${{ secrets.ATHLETE_FTP }}
           LOG_LEVEL: INFO
         run: python -m training_pipeline.cli compute-derived
+
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Derived metrics
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            CTL/ATL/TSB stop moving while this is red, so readiness advice goes
+            stale without looking wrong. Usually a DB or schema problem rather
+            than a credential — check `DATABASE_URL` and whether a migration is
+            pending (`alembic current` vs `alembic heads`).
