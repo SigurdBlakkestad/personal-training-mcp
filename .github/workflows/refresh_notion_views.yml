@@ -11,6 +11,9 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -27,3 +30,15 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_PLAN_ID: ${{ secrets.NOTION_DB_PLAN_ID }}
         run: python scripts/setup_notion_plan_views.py
+
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Notion view refresh
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            The Upcoming view's rolling window stops sliding forward, so the
+            plan looks increasingly like it is stuck in the past. Usually the
+            view or database was renamed or deleted in Notion — re-check the ids
+            the script filters on.

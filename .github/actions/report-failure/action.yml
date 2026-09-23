@@ -1,0 +1,100 @@
+name: Report failure
+description: >
+  File one GitHub issue when a workflow fails, and close it again when the
+  workflow next succeeds. A red run is only useful if someone sees it — the
+  2026-09-17 Garmin token rejection sat unnoticed for six days because nothing
+  spoke up. GitHub's own notification settings do the delivery, so this needs no
+  webhook and no extra secret.
+
+inputs:
+  component:
+    description: >
+      What failed, as it should read in the issue title, e.g. "Garmin sync".
+      Also the dedupe key: each component gets at most one open issue, so a
+      failing Garmin sync never suppresses the alert for a failing Notion mirror.
+    required: true
+  outcome:
+    description: Pass ${{ job.status }} — success closes, failure files, cancelled is ignored.
+    required: true
+  token:
+    description: GITHUB_TOKEN. Composite actions get no secrets of their own, so it has to be passed in.
+    required: true
+  recovery:
+    description: Markdown appended to the issue body telling future-you how to fix it.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      # Inputs go through env, never interpolated into the script body: the
+      # recovery text is markdown full of backticks and would otherwise both
+      # break the template literal and be an injection seam.
+      env:
+        COMPONENT: ${{ inputs.component }}
+        OUTCOME: ${{ inputs.outcome }}
+        RECOVERY: ${{ inputs.recovery }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const LABEL = 'sync-failure';
+          const { COMPONENT: component, OUTCOME: outcome, RECOVERY: recovery } = process.env;
+          const title = `${component} is failing`;
+          const { owner, repo } = context.repo;
+
+          if (outcome !== 'success' && outcome !== 'failure') {
+            core.info(`Outcome '${outcome}' is neither success nor failure; nothing to do.`);
+            return;
+          }
+
+          const open = await github.paginate(github.rest.issues.listForRepo, {
+            owner, repo, state: 'open', labels: LABEL, per_page: 100,
+          });
+          // Match on title, not just the label: one shared label across every
+          // workflow would otherwise let the first failure mask all the others.
+          const mine = open.filter(i => i.title === title);
+          const runUrl =
+            `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+          if (outcome === 'success') {
+            // Closing on recovery is load bearing. A stale open issue would
+            // satisfy the dedupe check below and silence the next outage.
+            for (const issue of mine) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: `Recovered — [${component} succeeded](${runUrl}).`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number, state: 'closed',
+              });
+              core.info(`Closed #${issue.number}.`);
+            }
+            return;
+          }
+
+          if (mine.length > 0) {
+            core.info(`#${mine[0].number} is already open for ${component}; not filing another.`);
+            return;
+          }
+
+          await github.rest.issues.createLabel({
+            owner, repo, name: LABEL, color: 'b60205',
+            description: 'A scheduled workflow is failing',
+          }).catch(() => {});  // already exists
+
+          const body = [
+            `**${component}** failed: [run log](${runUrl}).`,
+            '',
+            recovery,
+            '',
+            '---',
+            'This issue closes itself when the workflow next succeeds, so leave it',
+            'open — closing it by hand while the workflow is still broken means the',
+            'next failure files a duplicate.',
+          ].join('\n');
+
+          const created = await github.rest.issues.create({
+            owner, repo, labels: [LABEL], title, body,
+          });
+          core.info(`Filed #${created.data.number}.`);

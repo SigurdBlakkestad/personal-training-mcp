@@ -1,0 +1,44 @@
+name: Notify Self-Test
+
+# Manual only — never scheduled. Exercises the report-failure action end to end
+# without waiting for a real outage, and without filing a misleading
+# "Garmin sync is failing" issue to do it. Run it with mode=fail to prove an
+# issue gets filed (and that a second fail run does NOT file a duplicate), then
+# mode=succeed to prove it closes itself again.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: fail = file an issue, succeed = close it again
+        required: true
+        default: fail
+        type: choice
+        options: [fail, succeed]
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Simulate outcome
+        run: |
+          if [ "${{ inputs.mode }}" = "fail" ]; then
+            echo "Simulating a failed run."
+            exit 1
+          fi
+          echo "Simulating a healthy run."
+
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Notify self-test
+          outcome: ${{ job.status }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            Nothing is broken — this issue was filed on purpose by the
+            Notify Self-Test workflow to check that failure alerting still
+            works. Re-run that workflow with `mode=succeed` to close it.
