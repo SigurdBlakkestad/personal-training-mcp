@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from datetime import date as date_type
 
 from training_pipeline.calendar_publish.publisher import publish as publish_calendar
-from training_pipeline.derived.compute import recompute_all
+from training_pipeline.derived.compute import FORCE_RECOMPUTE_WINDOW_DAYS, recompute_all
 from training_pipeline.ingestors.garmin import GarminIngestor
 from training_pipeline.ingestors.strava import StravaIngestor
 from training_pipeline.ingestors.withings import WithingsIngestor
@@ -38,9 +38,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    sub.add_parser(
+    compute = sub.add_parser(
         "compute-derived",
         help="Recompute TSS, CTL/ATL/TSB, weekly load, and weight trend metrics",
+    )
+    compute.add_argument(
+        "--recompute-load",
+        action="store_true",
+        help=(
+            "Force recomputation of training_load for the last "
+            f"{FORCE_RECOMPUTE_WINDOW_DAYS} days, overwriting activities that "
+            "already have a value instead of only filling in missing ones."
+        ),
     )
 
     sub.add_parser(
@@ -90,8 +99,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "compute-derived":
         with get_session() as session:
-            counts = recompute_all(session)
-        logger.info("cli.compute_derived.complete", **counts.to_dict())
+            counts = recompute_all(session, force=args.recompute_load)
+        logger.info(
+            "cli.compute_derived.complete",
+            recompute_load=args.recompute_load,
+            **counts.to_dict(),
+        )
         return 0
 
     if args.command == "notion-mirror":

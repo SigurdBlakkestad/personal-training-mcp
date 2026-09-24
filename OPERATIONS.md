@@ -10,10 +10,24 @@ Once setup is complete (`docs/SETUP_MANUAL.md`), the system runs without you:
 05:00 UTC   Strava sync (also runs every 2h during the day)
 05:30 UTC   Withings sync
 05:45 UTC   Garmin sync (if Garmin tokens are configured)
-06:00 UTC   Compute derived metrics
+            └─ then, in the same workflow: compute derived metrics
 06:30 UTC   Notion mirror
 06:35 UTC   Publish .ics calendar (triggered after notion mirror)
 ```
+
+Derived metrics (TSS, CTL/ATL/TSB, weekly load, weight trend) are a step inside
+`sync_garmin.yml`, not a workflow of their own, and only run when the Garmin
+sync step succeeded. There is no scheduled `compute_derived.yml` run any more:
+computing on stale data reported a cheerful success through a 6-day sync outage,
+and skipping the compute makes the gap visible instead. The two steps alert
+separately — a failed compute files "Derived metrics is failing", not "Garmin
+sync is failing".
+
+`compute_derived.yml` still exists, manual only (Actions → Compute Derived
+Metrics → Run workflow), for ad-hoc reruns and backfills. Its `recompute_load`
+input forces a recompute of `training_load` for the last 60 days, overwriting
+values that are already there; leave it off unless you're deliberately
+rewriting history (e.g. after changing FTP or HR settings).
 
 All on GitHub Actions. View runs at `github.com/<user>/personal-training-mcp/actions`.
 
@@ -83,7 +97,7 @@ The mirror code retries on 429 with backoff. If it's still failing, you probably
 
 ### "MCP server returning 502 from Render"
 
-Render's free tier sleeps services after 15 min of inactivity. First request after sleep takes ~30 seconds to wake. If you're seeing 502, the service is waking — wait and retry. If the 502 persists for over a minute, check the Render dashboard for the service status.
+The server is kept awake by an external ping against its `/health` endpoint, so cold-start 502s from Render sleeping should no longer happen. If you're seeing one, check the Render dashboard for the service status.
 
 ### "Postgres connection errors"
 

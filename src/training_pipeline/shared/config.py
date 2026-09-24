@@ -7,6 +7,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=True,
+        # An unset GitHub Actions `vars.*`/`secrets.*` still sets the env var to
+        # "" rather than leaving it absent, which would otherwise fail typed
+        # (e.g. int) fields instead of falling back to their default.
+        env_ignore_empty=True,
     )
 
     DATABASE_URL: str
@@ -36,6 +40,8 @@ class Settings(BaseSettings):
     GARMINTOKENS_B64: str = ""
 
     ATHLETE_FTP: int = 200
+    ATHLETE_HR_REST: int = 49
+    ATHLETE_HR_MAX: int = 193
 
     NOTION_TOKEN: str = ""
     NOTION_DB_ACTIVITIES_ID: str = ""

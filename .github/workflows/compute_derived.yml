@@ -1,9 +1,16 @@
 name: Compute Derived Metrics
 
+# Manual only. The routine daily compute runs as a dependent step inside
+# sync_garmin.yml, so it can never churn over stale data after a failed sync.
+# This workflow is for ad-hoc backfills and investigations.
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      recompute_load:
+        description: Force recompute of training_load for the last 60 days, even where a value already exists
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   compute:
@@ -28,8 +35,10 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ATHLETE_FTP: ${{ secrets.ATHLETE_FTP }}
+          ATHLETE_HR_REST: ${{ vars.ATHLETE_HR_REST }}
+          ATHLETE_HR_MAX: ${{ vars.ATHLETE_HR_MAX }}
           LOG_LEVEL: INFO
-        run: python -m training_pipeline.cli compute-derived
+        run: python -m training_pipeline.cli compute-derived ${{ github.event.inputs.recompute_load == 'true' && '--recompute-load' || '' }}
 
       - uses: ./.github/actions/report-failure
         if: always()
