@@ -9,8 +9,8 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     # No continue-on-error: Garmin is its own workflow, so a red run here never
-    # blocks Strava/Withings/derived (those run on their own schedules). Failing
-    # loud is deliberate — a silent "success" once hid a 4-month token outage.
+    # blocks Strava/Withings (those run on their own schedules). Failing loud is
+    # deliberate — a silent "success" once hid a 4-month token outage.
     permissions:
       contents: read
       issues: write
@@ -35,6 +35,21 @@ jobs:
           LOG_LEVEL: INFO
         run: python -m training_pipeline.cli sync --source garmin
 
+      # Derived metrics run here rather than on their own schedule: computing
+      # CTL/ATL/TSB on data that failed to sync reports a confident "success"
+      # over stale numbers, which is exactly how a 6-day Garmin outage stayed
+      # invisible.
+      - name: Compute derived
+        id: compute
+        if: steps.sync.outcome == 'success'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ATHLETE_FTP: ${{ secrets.ATHLETE_FTP }}
+          ATHLETE_HR_REST: ${{ vars.ATHLETE_HR_REST }}
+          ATHLETE_HR_MAX: ${{ vars.ATHLETE_HR_MAX }}
+          LOG_LEVEL: INFO
+        run: python -m training_pipeline.cli compute-derived
+
       - name: Summarize result
         if: always()
         run: |
@@ -44,12 +59,19 @@ jobs:
             echo "Garmin sync: FAILED — stored token rejected, or the library needs a bump" >> "$GITHUB_STEP_SUMMARY"
             echo "Recovery: see OPERATIONS.md 'Garmin workflow failing'. Re-running scripts/garmin_auth.py is not enough on its own — the rejected service_credentials row has to be cleared so the new secret is used as the seed." >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "Derived metrics: ${{ steps.compute.outcome || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"
 
+      # Keyed on the sync step, not job.status: the job now also carries the
+      # compute step, and an aggregate status would file "Garmin sync is
+      # failing" for a perfectly healthy sync whose compute blew up. But if
+      # sync never got to run at all (checkout/install failed first), its
+      # outcome is 'skipped', not 'failure' — fall back to job.status so that
+      # kind of failure still gets reported instead of going silently unnoticed.
       - uses: ./.github/actions/report-failure
         if: always()
         with:
           component: Garmin sync
-          outcome: ${{ job.status }}
+          outcome: ${{ steps.sync.outcome == 'skipped' && job.status || steps.sync.outcome }}
           token: ${{ secrets.GITHUB_TOKEN }}
           recovery: |
             Read the chained cause in the traceback before assuming a dead token:
@@ -61,3 +83,18 @@ jobs:
             `scripts/garmin_auth.py` is not enough on its own — the rejected
             `service_credentials` row has to be deleted so the new secret is
             used as the seed.
+
+      # A skipped compute (sync failed) reports neither success nor failure, so
+      # this neither files nor closes — the Garmin sync issue is the real alert.
+      - uses: ./.github/actions/report-failure
+        if: always()
+        with:
+          component: Derived metrics
+          outcome: ${{ steps.compute.outcome }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          recovery: |
+            CTL/ATL/TSB stop moving while this is red, so readiness advice goes
+            stale without looking wrong. The Garmin sync in the same job
+            succeeded, so this is a DB or schema problem rather than a
+            credential — check `DATABASE_URL` and whether a migration is
+            pending (`alembic current` vs `alembic heads`).

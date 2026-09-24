@@ -19,6 +19,9 @@ from training_pipeline.shared.models import Activity, BodyMeasurement, DerivedMe
 logger = get_logger(__name__)
 
 DEFAULT_RECOMPUTE_WINDOW_DAYS = 365
+# A forced training-load recompute only needs to reach recent training, so it uses a
+# deliberately narrower window than the default one.
+FORCE_RECOMPUTE_WINDOW_DAYS = 60
 EWMA_WARMUP_DAYS = 90
 
 
@@ -38,18 +41,26 @@ class RecomputeCounts:
         }
 
 
-def recompute_all(session: Session, since: date | None = None) -> RecomputeCounts:
+def recompute_all(
+    session: Session, since: date | None = None, force: bool = False
+) -> RecomputeCounts:
     """Recompute all derived metrics and upsert into derived_metrics.
 
     `since` bounds the rows written to derived_metrics, but training load is
     backfilled and EWMAs (CTL/ATL/TSB) read further history to warm up.
+    `force` recomputes training load for activities that already have a value
+    instead of only backfilling nulls, scoped to the last
+    `FORCE_RECOMPUTE_WINDOW_DAYS` days — independent of `since`, so forcing a
+    training-load recompute doesn't also shrink the CTL/ATL/TSB, weekly-load,
+    and weight-trend window down from their normal `since`.
     """
     settings = get_settings()
     today = datetime.now(UTC).date()
     effective_since = (
         since if since is not None else today - timedelta(days=DEFAULT_RECOMPUTE_WINDOW_DAYS)
     )
-    log = logger.bind(since=effective_since.isoformat())
+    force_since = today - timedelta(days=FORCE_RECOMPUTE_WINDOW_DAYS) if force else None
+    log = logger.bind(since=effective_since.isoformat(), force=force)
     log.info("derived.recompute.start")
 
     counts = RecomputeCounts()
@@ -65,7 +76,14 @@ def recompute_all(session: Session, since: date | None = None) -> RecomputeCount
         )
     )
 
-    counts.training_load_updated = _backfill_training_load(activities, ftp=settings.ATHLETE_FTP)
+    counts.training_load_updated = _backfill_training_load(
+        activities,
+        ftp=settings.ATHLETE_FTP,
+        rest_hr=settings.ATHLETE_HR_REST,
+        max_hr=settings.ATHLETE_HR_MAX,
+        force=force,
+        force_since=force_since,
+    )
     session.flush()
 
     counts.ctl_atl_tsb_rows = _upsert_ctl_atl_tsb(session, activities, since=effective_since)
@@ -76,10 +94,30 @@ def recompute_all(session: Session, since: date | None = None) -> RecomputeCount
     return counts
 
 
-def _backfill_training_load(activities: Iterable[Activity], *, ftp: int) -> int:
+def _backfill_training_load(
+    activities: Iterable[Activity],
+    *,
+    ftp: int,
+    rest_hr: int,
+    max_hr: int,
+    force: bool = False,
+    force_since: date | None = None,
+) -> int:
+    """Backfill missing training_load values.
+
+    When `force` is set, activities on or after `force_since` are recomputed
+    even if they already have a value; activities before `force_since` (e.g.
+    the EWMA warmup window pulled in for CTL/ATL context) are still only
+    backfilled when null, so a forced recompute doesn't silently overwrite
+    history outside the requested window.
+    """
     updated = 0
     for activity in activities:
-        if activity.training_load is not None:
+        has_value = activity.training_load is not None
+        in_force_window = force and (
+            force_since is None or activity.start_time.date() >= force_since
+        )
+        if has_value and not in_force_window:
             continue
         load = compute_training_load(
             {
@@ -88,6 +126,8 @@ def _backfill_training_load(activities: Iterable[Activity], *, ftp: int) -> int:
                 "avg_hr": activity.avg_hr,
             },
             ftp=ftp,
+            rest_hr=rest_hr,
+            max_hr=max_hr,
         )
         if load is None:
             continue
