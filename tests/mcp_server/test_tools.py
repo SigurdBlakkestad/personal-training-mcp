@@ -389,25 +389,69 @@ def test_get_training_load_trend_aligns_dates(session: FakeSession) -> None:
 
 
 def test_get_weekly_load_groups_by_week(session: FakeSession) -> None:
-    week = date(2026, 5, 4)
+    today = datetime.now(UTC).date()
+    week = today - timedelta(days=today.weekday())
 
     def dispatch(stmt: Any) -> Any:
-        return [
-            (week, "weekly_load_cycling", 6.5),
-            (week, "weekly_load_running", 2.0),
-            (week, "weekly_load_lifting", 1.5),
-            (week, "weekly_load_total", 320.0),
-        ]
+        if "derived_metrics" in stmt:
+            return [
+                (week, "weekly_load_cycling", 6.5),
+                (week, "weekly_load_running", 2.0),
+                (week, "weekly_load_lifting", 1.5),
+                (week, "weekly_load_total", 320.0),
+            ]
+        return []
 
     session.dispatch = dispatch
     rows = tools._get_weekly_load(session, weeks=4)
     assert rows == [
         {
             "week_of": week.isoformat(),
-            "cycling_hours": 6.5,
-            "running_hours": 2.0,
-            "lifting_hours": 1.5,
+            "cycling_load": 6.5,
+            "running_load": 2.0,
+            "lifting_load": 1.5,
             "total_load": 320.0,
+            "cycling_hours": 0.0,
+            "running_hours": 0.0,
+            "lifting_hours": 0.0,
+            "total_hours": 0.0,
+        }
+    ]
+
+
+def test_get_weekly_load_hours_come_from_duration_not_load(session: FakeSession) -> None:
+    today = datetime.now(UTC).date()
+    monday = today - timedelta(days=today.weekday())
+    tue = datetime.combine(monday + timedelta(days=1), time(7), tzinfo=UTC)
+    # A week whose Monday falls before the window start is never reported,
+    # even partially.
+    stale = datetime.combine(monday - timedelta(days=22), time(7), tzinfo=UTC)
+
+    def dispatch(stmt: Any) -> Any:
+        if "derived_metrics" in stmt:
+            return [(monday, "weekly_load_running", 122.5), (monday, "weekly_load_total", 190.0)]
+        if "FROM activities" in stmt:
+            return [
+                (tue, "running", 1740),
+                (tue, "cycling", 5400),
+                (tue, "swimming", 1800),
+                (stale, "running", 3600),
+            ]
+        return []
+
+    session.dispatch = dispatch
+    rows = tools._get_weekly_load(session, weeks=3)
+    assert rows == [
+        {
+            "week_of": monday.isoformat(),
+            "cycling_load": 0.0,
+            "running_load": 122.5,
+            "lifting_load": 0.0,
+            "total_load": 190.0,
+            "cycling_hours": 1.5,
+            "running_hours": 0.48,
+            "lifting_hours": 0.0,
+            "total_hours": 2.48,
         }
     ]
 
