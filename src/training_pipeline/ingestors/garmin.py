@@ -65,6 +65,7 @@ GARMIN_ONLY_ACTIVITY_FIELDS: tuple[str, ...] = (
 # the same session, Garmin's value wins for these fields.
 # ``garmin_training_load`` is Garmin's own per-activity load (EPOC-based),
 # kept for reference only — CTL/ATL use our computed ``training_load``.
+# ``device_id`` is the Garmin device that recorded the session.
 GARMIN_PRIORITY_FIELDS: tuple[str, ...] = (
     "name",
     "duration_seconds",
@@ -78,6 +79,7 @@ GARMIN_PRIORITY_FIELDS: tuple[str, ...] = (
     "avg_cadence",
     "calories",
     "garmin_training_load",
+    "device_id",
 )
 
 SPORT_TYPE_MAP: dict[str, str] = {
@@ -742,6 +744,7 @@ class GarminIngestor(IngestorBase):
             "avg_stride_length_cm": _coerce_float(activity.get("avgStrideLength")),
             "avg_ground_contact_time_ms": _coerce_int(activity.get("avgGroundContactTime")),
             "garmin_training_load": _coerce_float(activity.get("activityTrainingLoad")),
+            "device_id": _coerce_int(activity.get("deviceId")),
             "raw": activity,
         }
 
