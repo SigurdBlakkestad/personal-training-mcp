@@ -15,6 +15,11 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from training_pipeline.derived.weekly_load import (
+    TOTAL_KEY,
+    TRACKED_SPORTS,
+    sum_by_week_and_sport,
+)
 from training_pipeline.notion_sync.client import NotionClient
 from training_pipeline.notion_sync.plan_mirror import mirror_plan
 from training_pipeline.shared.config import get_settings
@@ -392,32 +397,48 @@ def get_training_load_trend(weeks: int = 8) -> list[dict[str, Any]]:
 
 
 def _get_weekly_load(session: Session, weeks: int) -> list[dict[str, Any]]:
+    """Per ISO week (Monday ``week_of``): load points and hours per sport.
+
+    ``*_load`` / ``total_load`` are summed training-load points (the
+    ``weekly_load_*`` derived metrics). ``*_hours`` / ``total_hours`` are
+    activity durations in hours, bucketed the same way as the load.
+    """
     today = datetime.now(UTC).date()
     start = today - timedelta(weeks=weeks)
-    rows = session.execute(
+    load_rows = session.execute(
         select(DerivedMetric.date, DerivedMetric.metric_name, DerivedMetric.value)
         .where(DerivedMetric.metric_name.like("weekly_load_%"))
         .where(DerivedMetric.date >= start)
         .order_by(DerivedMetric.date)
     ).all()
+    # Only weeks whose Monday is on or after `start` are reported (same rule as
+    # the load rows), so every activity in those weeks starts after `start`.
+    activity_rows = session.execute(
+        select(Activity.start_time, Activity.sport_type, Activity.duration_seconds)
+        .where(Activity.start_time >= datetime.combine(start, time.min, tzinfo=UTC))
+        .where(Activity.duration_seconds.is_not(None))
+    ).all()
+    seconds = sum_by_week_and_sport(
+        (start_time, sport, float(duration)) for start_time, sport, duration in activity_rows
+    )
 
     by_week: dict[date_type, dict[str, Any]] = {}
-    for week_of, metric, value in rows:
-        bucket = by_week.setdefault(
+
+    def bucket_for(week_of: date_type) -> dict[str, Any]:
+        return by_week.setdefault(
             week_of,
-            {
-                "week_of": week_of.isoformat(),
-                "cycling_hours": 0.0,
-                "running_hours": 0.0,
-                "lifting_hours": 0.0,
-                "total_load": 0.0,
-            },
+            {"week_of": week_of.isoformat()}
+            | {f"{key}_load": 0.0 for key in (*TRACKED_SPORTS, TOTAL_KEY)}
+            | {f"{key}_hours": 0.0 for key in (*TRACKED_SPORTS, TOTAL_KEY)},
         )
-        suffix = metric.removeprefix("weekly_load_")
-        if suffix == "total":
-            bucket["total_load"] = float(value)
-        elif suffix in {"cycling", "running", "lifting"}:
-            bucket[f"{suffix}_hours"] = float(value)
+
+    for week_of, metric, value in load_rows:
+        key = metric.removeprefix("weekly_load_")
+        if key in TRACKED_SPORTS or key == TOTAL_KEY:
+            bucket_for(week_of)[f"{key}_load"] = float(value)
+    for (week_of, key), total_seconds in seconds.items():
+        if week_of >= start:
+            bucket_for(week_of)[f"{key}_hours"] = round(total_seconds / 3600, 2)
     result = [by_week[w] for w in sorted(by_week.keys())]
     logger.info("mcp.get_weekly_load", weeks=weeks, result_count=len(result))
     return result

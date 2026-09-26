@@ -77,7 +77,14 @@ def get_training_load_trend(weeks: int = 8) -> list[dict[str, Any]]:
 
 @mcp.tool
 def get_weekly_load(weeks: int = 8) -> list[dict[str, Any]]:
-    """Return per-week training load by sport plus a total."""
+    """Return per-ISO-week training load and hours by sport, plus totals.
+
+    Each row: ``week_of`` (Monday, YYYY-MM-DD); ``cycling_load``,
+    ``running_load``, ``lifting_load``, ``total_load`` — summed training-load
+    points (TSS for cycling, TRIMP otherwise; not hours); ``cycling_hours``,
+    ``running_hours``, ``lifting_hours``, ``total_hours`` — activity duration
+    in hours. Totals include sports outside the three named ones.
+    """
     return tools.get_weekly_load(weeks=weeks)
 
 
