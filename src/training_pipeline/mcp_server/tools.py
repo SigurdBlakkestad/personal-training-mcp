@@ -602,7 +602,7 @@ def _readiness_today(session: Session) -> dict[str, Any]:
         .order_by(desc(BodyMeasurement.measured_at))
         .limit(1)
     ).first()
-    latest_weight = float(latest_weight_row[1]) if latest_weight_row is not None else None
+    latest_weight = latest_weight_row[1] if latest_weight_row is not None else None
     latest_weight_date = (
         latest_weight_row[0].date().isoformat() if latest_weight_row is not None else None
     )
