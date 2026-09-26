@@ -67,6 +67,7 @@ def _garmin_activity(
         "avgStrideLength": 152.3,
         "avgGroundContactTime": 245.0,
         "activityTrainingLoad": 187.4,
+        "deviceId": 3644296614,
     }
 
 
@@ -176,6 +177,7 @@ def test_map_activity_basic_fields() -> None:
     assert mapped["avg_stride_length_cm"] == 152.3
     assert mapped["avg_ground_contact_time_ms"] == 245
     assert mapped["garmin_training_load"] == 187.4
+    assert mapped["device_id"] == 3644296614
     assert mapped["raw"] is activity
 
 
@@ -194,6 +196,7 @@ def test_map_activity_handles_missing_optional_fields() -> None:
     assert mapped["avg_hr"] is None
     assert mapped["avg_cadence"] is None
     assert mapped["garmin_training_load"] is None
+    assert mapped["device_id"] is None
     assert mapped["sport_type"] == "running"
 
 
@@ -295,6 +298,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
         "avg_stride_length_cm": 148.0,
         "avg_ground_contact_time_ms": 240,
         "garmin_training_load": 95.2,
+        "device_id": 3341217191,
         "raw": {"activityId": 42, "extra": "garmin-data"},
     }
 
@@ -316,6 +320,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
     strava_row.avg_cadence = 86
     strava_row.calories = 580
     strava_row.garmin_training_load = 80.0  # stale value from an earlier merge
+    strava_row.device_id = None
     strava_row.aerobic_training_effect = None
     strava_row.anaerobic_training_effect = None
     strava_row.training_effect_label = None
@@ -344,6 +349,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
     assert strava_row.avg_cadence == 88
     assert strava_row.calories == 612
     assert strava_row.garmin_training_load == 95.2
+    assert strava_row.device_id == 3341217191
     # Garmin-only fields fill in (they were None on Strava)
     assert strava_row.aerobic_training_effect == 3.4
     assert strava_row.anaerobic_training_effect == 1.1

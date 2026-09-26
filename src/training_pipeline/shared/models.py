@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -50,6 +51,7 @@ class Activity(Base):
     avg_cadence: Mapped[int | None] = mapped_column(SmallInteger)
     training_load: Mapped[float | None] = mapped_column(REAL)
     garmin_training_load: Mapped[float | None] = mapped_column(REAL)
+    device_id: Mapped[int | None] = mapped_column(BigInteger)
     aerobic_training_effect: Mapped[float | None] = mapped_column(REAL)
     anaerobic_training_effect: Mapped[float | None] = mapped_column(REAL)
     training_effect_label: Mapped[str | None] = mapped_column(Text)
