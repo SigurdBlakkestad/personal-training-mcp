@@ -1,9 +1,11 @@
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from training_pipeline.derived import compute
+from training_pipeline.derived.training_load import compute_trimp
 from training_pipeline.shared.models import Activity
 
 
@@ -164,3 +166,15 @@ def test_backfill_training_load_force_since_excludes_older_warmup_activities() -
     assert old_activity.training_load == 12.5
     assert recent_activity.training_load is not None
     assert recent_activity.training_load != 12.5
+
+
+def test_backfill_training_load_scores_run_power_as_trimp() -> None:
+    run = _activity(sport_type="running", normalized_power=334, avg_hr=136, duration_seconds=1740)
+    ride = _activity(source_id="a2", normalized_power=210)
+
+    updated = compute._backfill_training_load([run, ride], ftp=210, rest_hr=44, max_hr=201)
+
+    assert updated == 2
+    assert run.training_load is not None
+    assert math.isclose(run.training_load, compute_trimp(1740, 136, rest_hr=44, max_hr=201))
+    assert ride.training_load == 100.0

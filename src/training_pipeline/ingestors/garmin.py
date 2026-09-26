@@ -63,6 +63,8 @@ GARMIN_ONLY_ACTIVITY_FIELDS: tuple[str, ...] = (
 # are deliberately named on the watch ("Sykkeløkt (3)") whereas Strava
 # auto-generates generic labels ("Afternoon Ride"). When both sources cover
 # the same session, Garmin's value wins for these fields.
+# ``garmin_training_load`` is Garmin's own per-activity load (EPOC-based),
+# kept for reference only — CTL/ATL use our computed ``training_load``.
 GARMIN_PRIORITY_FIELDS: tuple[str, ...] = (
     "name",
     "duration_seconds",
@@ -75,6 +77,7 @@ GARMIN_PRIORITY_FIELDS: tuple[str, ...] = (
     "normalized_power",
     "avg_cadence",
     "calories",
+    "garmin_training_load",
 )
 
 SPORT_TYPE_MAP: dict[str, str] = {
@@ -738,6 +741,7 @@ class GarminIngestor(IngestorBase):
             "max_power": _coerce_int(activity.get("maxPower") or activity.get("maxAvgPower")),
             "avg_stride_length_cm": _coerce_float(activity.get("avgStrideLength")),
             "avg_ground_contact_time_ms": _coerce_int(activity.get("avgGroundContactTime")),
+            "garmin_training_load": _coerce_float(activity.get("activityTrainingLoad")),
             "raw": activity,
         }
 

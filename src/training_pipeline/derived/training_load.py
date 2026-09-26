@@ -7,8 +7,13 @@ DEFAULT_REST_HR = 50
 DEFAULT_MAX_HR = 190
 TRIMP_B_MALE = 1.92
 
+# FTP is a cycling threshold, so power TSS is only meaningful for rides. Wrist
+# running power (e.g. Fenix 8) against a cycling FTP wildly overstates load.
+POWER_TSS_SPORT = "cycling"
+
 
 class ActivityInput(TypedDict, total=False):
+    sport_type: str | None
     duration_seconds: int | None
     normalized_power: int | None
     avg_hr: int | None
@@ -48,7 +53,12 @@ def compute_training_load(
     if duration_seconds is None or duration_seconds <= 0:
         return None
     normalized_power = activity.get("normalized_power")
-    if normalized_power is not None and normalized_power > 0 and ftp > 0:
+    if (
+        activity.get("sport_type") == POWER_TSS_SPORT
+        and normalized_power is not None
+        and normalized_power > 0
+        and ftp > 0
+    ):
         return compute_tss_from_power(duration_seconds, normalized_power, ftp)
     avg_hr = activity.get("avg_hr")
     if avg_hr is not None and avg_hr > 0:

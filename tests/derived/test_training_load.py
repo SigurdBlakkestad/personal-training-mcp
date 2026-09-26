@@ -37,11 +37,31 @@ def test_trimp_handles_degenerate_hr_range() -> None:
     assert compute_trimp(duration_seconds=3600, avg_hr=180, rest_hr=190, max_hr=190) == 0.0
 
 
-def test_compute_training_load_prefers_power_when_available() -> None:
+def test_compute_training_load_prefers_power_for_cycling() -> None:
+    load = compute_training_load(
+        {"sport_type": "cycling", "duration_seconds": 3600, "normalized_power": 200, "avg_hr": 140},
+        ftp=200,
+    )
+    assert load == 100.0
+
+
+def test_compute_training_load_uses_hr_for_running_with_power() -> None:
+    # Fenix 8 wrist running power (NP 334 W) must not be scored against a cycling
+    # FTP: this easy 29-min run is ~36 TRIMP, not ~122 TSS.
+    load = compute_training_load(
+        {"sport_type": "running", "duration_seconds": 1740, "normalized_power": 334, "avg_hr": 136},
+        ftp=250,
+    )
+    assert load is not None
+    assert math.isclose(load, compute_trimp(1740, 136))
+
+
+def test_compute_training_load_uses_hr_when_sport_unknown() -> None:
     load = compute_training_load(
         {"duration_seconds": 3600, "normalized_power": 200, "avg_hr": 140}, ftp=200
     )
-    assert load == 100.0
+    assert load is not None
+    assert math.isclose(load, compute_trimp(3600, 140))
 
 
 def test_compute_training_load_falls_back_to_hr() -> None:

@@ -35,7 +35,10 @@ def get_recent_activities(days: int = 14, sport_type: str | None = None) -> list
     effort), ``kilojoules`` (total work, cycling), ``avg_speed_kmh``,
     ``is_trainer`` (indoor flag), ``workout_type`` (race/workout/default
     code), ``description``, ``max_power`` (peak watts).
-    Garmin — ``training_load`` (our TSS proxy), ``aerobic_training_effect``
+    ``training_load`` is our load score: power TSS (vs FTP) for cycling,
+    HR TRIMP for every other sport. Garmin — ``garmin_training_load``
+    (Garmin's own EPOC-based load, reference only; not used in CTL/ATL),
+    ``aerobic_training_effect``
     and ``anaerobic_training_effect`` (0–5), ``training_effect_label``
     (AEROBIC_BASE/TEMPO/THRESHOLD/VO2MAX/etc.), ``vo2_max``,
     ``moderate_intensity_minutes`` / ``vigorous_intensity_minutes``,
