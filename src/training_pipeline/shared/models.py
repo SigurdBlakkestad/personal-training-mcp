@@ -49,6 +49,7 @@ class Activity(Base):
     calories: Mapped[int | None] = mapped_column(Integer)
     avg_cadence: Mapped[int | None] = mapped_column(SmallInteger)
     training_load: Mapped[float | None] = mapped_column(REAL)
+    garmin_training_load: Mapped[float | None] = mapped_column(REAL)
     aerobic_training_effect: Mapped[float | None] = mapped_column(REAL)
     anaerobic_training_effect: Mapped[float | None] = mapped_column(REAL)
     training_effect_label: Mapped[str | None] = mapped_column(Text)

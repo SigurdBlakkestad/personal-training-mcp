@@ -121,6 +121,7 @@ def _backfill_training_load(
             continue
         load = compute_training_load(
             {
+                "sport_type": activity.sport_type,
                 "duration_seconds": activity.duration_seconds,
                 "normalized_power": activity.normalized_power,
                 "avg_hr": activity.avg_hr,

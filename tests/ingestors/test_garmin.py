@@ -66,6 +66,7 @@ def _garmin_activity(
         "vigorousIntensityMinutes": 40,
         "avgStrideLength": 152.3,
         "avgGroundContactTime": 245.0,
+        "activityTrainingLoad": 187.4,
     }
 
 
@@ -174,6 +175,7 @@ def test_map_activity_basic_fields() -> None:
     assert mapped["max_power"] == 520
     assert mapped["avg_stride_length_cm"] == 152.3
     assert mapped["avg_ground_contact_time_ms"] == 245
+    assert mapped["garmin_training_load"] == 187.4
     assert mapped["raw"] is activity
 
 
@@ -191,6 +193,7 @@ def test_map_activity_handles_missing_optional_fields() -> None:
     assert mapped["end_time"] is None
     assert mapped["avg_hr"] is None
     assert mapped["avg_cadence"] is None
+    assert mapped["garmin_training_load"] is None
     assert mapped["sport_type"] == "running"
 
 
@@ -291,6 +294,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
         "min_hr": 92,
         "avg_stride_length_cm": 148.0,
         "avg_ground_contact_time_ms": 240,
+        "garmin_training_load": 95.2,
         "raw": {"activityId": 42, "extra": "garmin-data"},
     }
 
@@ -311,6 +315,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
     strava_row.normalized_power = 138
     strava_row.avg_cadence = 86
     strava_row.calories = 580
+    strava_row.garmin_training_load = 80.0  # stale value from an earlier merge
     strava_row.aerobic_training_effect = None
     strava_row.anaerobic_training_effect = None
     strava_row.training_effect_label = None
@@ -338,6 +343,7 @@ def test_merge_into_strava_writes_supplement_on_match() -> None:
     assert strava_row.normalized_power == 145
     assert strava_row.avg_cadence == 88
     assert strava_row.calories == 612
+    assert strava_row.garmin_training_load == 95.2
     # Garmin-only fields fill in (they were None on Strava)
     assert strava_row.aerobic_training_effect == 3.4
     assert strava_row.anaerobic_training_effect == 1.1
