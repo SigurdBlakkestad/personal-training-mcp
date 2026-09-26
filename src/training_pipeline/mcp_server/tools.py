@@ -414,9 +414,11 @@ def _get_weekly_load(session: Session, weeks: int) -> list[dict[str, Any]]:
     # Only weeks whose Monday is on or after `start` are reported (same rule as
     # the load rows), so every activity in those weeks starts after `start`.
     activity_rows = session.execute(
-        select(Activity.start_time, Activity.sport_type, Activity.duration_seconds)
-        .where(Activity.start_time >= datetime.combine(start, time.min, tzinfo=UTC))
-        .where(Activity.duration_seconds.is_not(None))
+        select(
+            Activity.start_time,
+            Activity.sport_type,
+            func.coalesce(Activity.duration_seconds, 0),
+        ).where(Activity.start_time >= datetime.combine(start, time.min, tzinfo=UTC))
     ).all()
     seconds = sum_by_week_and_sport(
         (start_time, sport, float(duration)) for start_time, sport, duration in activity_rows
