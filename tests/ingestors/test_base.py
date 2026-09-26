@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
@@ -226,3 +227,34 @@ def test_upsert_daily_summary_inserted() -> None:
     )
     assert outcome == "inserted"
     session.execute.assert_called_once()
+
+
+def test_upsert_daily_summary_keeps_stored_values_when_resync_returns_null() -> None:
+    ingestor = FakeIngestor(IngestionResult())
+    session = MagicMock(spec=Session)
+    session.execute.return_value.scalar_one.return_value = False
+
+    outcome = ingestor.upsert_daily_summary(
+        session,
+        {
+            "date": date(2026, 1, 1),
+            "source": "garmin",
+            "hrv_ms": None,
+            "resting_hr": 48,
+            "raw": {"hrv": None, "user_summary": {"restingHeartRate": 48}},
+        },
+    )
+
+    assert outcome == "updated"
+    stmt = session.execute.call_args.args[0]
+    compiled = str(stmt.compile(dialect=postgresql.dialect()))
+    set_clause = compiled.split("DO UPDATE SET", 1)[1]
+    assert "hrv_ms = coalesce(excluded.hrv_ms, daily_summary.hrv_ms)" in set_clause
+    assert "resting_hr = coalesce(excluded.resting_hr, daily_summary.resting_hr)" in set_clause
+    assert "raw = (daily_summary.raw || excluded.raw)" in set_clause
+    assert "ingested_at = now()" in set_clause
+    assert "date =" not in set_clause
+    assert "source =" not in set_clause
+    # The endpoint that returned nothing is dropped, so the merge keeps the stored payload.
+    inserted_raw = stmt.compile(dialect=postgresql.dialect()).params["raw"]
+    assert inserted_raw == {"user_summary": {"restingHeartRate": 48}}

@@ -147,10 +147,22 @@ class IngestorBase(ABC):
         return "inserted"
 
     def upsert_daily_summary(self, session: Session, summary: dict[str, Any]) -> UpsertOutcome:
-        insert_stmt = pg_insert(DailySummary).values(**summary)
+        """Insert a day's summary, or merge it into the stored one.
+
+        A re-sync must never erase what an earlier sync captured: a transient
+        endpoint failure surfaces as None, so on conflict a NULL metric keeps
+        the stored value and ``raw`` is merged per endpoint (``stored || new``)
+        after dropping the endpoints that returned nothing this time.
+        """
+        raw = {key: value for key, value in summary["raw"].items() if value is not None}
+        insert_stmt = pg_insert(DailySummary).values(**{**summary, "raw": raw})
         update_cols: dict[str, Any] = {
-            col: insert_stmt.excluded[col] for col in summary if col not in ("date", "source")
+            col: func.coalesce(insert_stmt.excluded[col], getattr(DailySummary, col))
+            for col in summary
+            if col not in ("date", "source", "raw")
         }
+        update_cols["raw"] = DailySummary.raw.op("||")(insert_stmt.excluded.raw)
+        update_cols["ingested_at"] = func.now()
         stmt: Any = insert_stmt.on_conflict_do_update(
             constraint="uq_daily_summary_date_source",
             set_=update_cols,
