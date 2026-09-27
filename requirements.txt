@@ -1,5 +1,7 @@
 psycopg[binary]>=3.2
-sqlalchemy>=2.0
+# 2.1 types Row indexing per column; keep local and fresh envs on the same
+# typing so mypy agrees everywhere.
+sqlalchemy>=2.1,<2.2
 alembic>=1.13
 pydantic>=2.7
 pydantic-settings>=2.5
