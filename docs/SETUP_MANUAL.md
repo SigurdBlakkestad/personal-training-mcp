@@ -60,7 +60,7 @@ git config --global user.email "your-email@example.com"
 3. Verify it works locally:
    ```bash
    python3.12 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
+   pip install -e ".[dev]"
    pytest   # should be all green
    ```
 
@@ -410,7 +410,7 @@ Garmin updates their internal auth ~once a year, breaking unofficial libraries. 
 1. The `sync_garmin.yml` workflow will start failing
 2. Other workflows keep running (Strava, Withings, derived metrics, Notion, iCal) — `continue-on-error: true` isolates the blast radius
 3. Check https://github.com/cyberjunky/python-garminconnect/issues for the current status
-4. When a fix is released: bump the version in `requirements.txt`, re-run `scripts/garmin_auth.py` locally, update the secret
+4. When a fix is released: bump the `garminconnect` floor in `pyproject.toml`, re-run `scripts/garmin_auth.py` locally, update the secret
 
 Don't panic-fix on the day of breakage. Your other data sources have you covered.
 
@@ -460,7 +460,7 @@ Use this as a single page to track where you are.
 [ ] Section 1: macOS / Python 3.12 / git / gh / Claude Code installed
 [ ] Section 2: forked the repo, cloned locally, `pytest` green
 [ ] Section 3: Supabase project + DATABASE_URL in .env and GitHub Secrets
-[ ] One-time install: pip install -r requirements.txt && alembic upgrade head
+[ ] One-time install: pip install -e ".[dev]" && alembic upgrade head
 [ ] Section 4: Strava app + refresh token in .env and GitHub Secrets
 [ ] Section 5: Withings developer app, client_id/secret in .env and GitHub Secrets
 [ ] Section 5.3: ran scripts/withings_auth.py, tokens added
