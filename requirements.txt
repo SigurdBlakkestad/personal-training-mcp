@@ -1,4 +1,4 @@
 # Runtime dependencies live in pyproject.toml ([project].dependencies).
-# Kept so `pip install -r requirements.txt` (Render, GitHub workflows) still
+# Kept so `pip install -r requirements.txt` (Render) still
 # installs the package with them.
 -e .
