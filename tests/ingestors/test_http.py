@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from training_pipeline.ingestors.http import HttpClient
+from training_pipeline.shared.retry import is_connect_failure
 
 
 def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> HttpClient:
@@ -83,3 +84,28 @@ def test_no_retry_on_404() -> None:
         assert call_count == 1
     finally:
         client.close()
+
+
+def test_retry_on_predicate_overrides_default() -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        raise httpx.ReadTimeout("response lost", request=request)
+
+    client = _make_client(handler)
+    try:
+        with pytest.raises(httpx.ReadTimeout):
+            client.post("https://example.com/api", retry_on=is_connect_failure)
+        assert call_count == 1
+    finally:
+        client.close()
+
+
+def test_is_connect_failure_only_matches_unsent_requests() -> None:
+    request = httpx.Request("POST", "https://example.com/api")
+    assert is_connect_failure(httpx.ConnectError("refused", request=request))
+    assert is_connect_failure(httpx.ConnectTimeout("timeout", request=request))
+    assert not is_connect_failure(httpx.ReadTimeout("lost", request=request))
+    assert not is_connect_failure(httpx.RemoteProtocolError("eof", request=request))

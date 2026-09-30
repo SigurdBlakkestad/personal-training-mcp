@@ -18,3 +18,9 @@ def is_retryable(exc: BaseException) -> bool:
         exc,
         httpx.ConnectError | httpx.ConnectTimeout | httpx.ReadTimeout | httpx.RemoteProtocolError,
     )
+
+
+def is_connect_failure(exc: BaseException) -> bool:
+    """Retry predicate for non-idempotent calls: only errors where the request
+    provably never reached the server, so a retry cannot replay it."""
+    return isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)

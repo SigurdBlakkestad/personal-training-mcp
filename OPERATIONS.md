@@ -40,7 +40,7 @@ All on GitHub Actions. View runs at `github.com/<user>/personal-training-mcp/act
 ## Monthly rhythm (you)
 
 - **Review month-end:** "show me this month's training load trend and weight trend" — Claude analyzes.
-- **Check token health:** scan workflow logs for any "refresh token rotated" warnings from Strava or Withings. If you see one, update the corresponding GitHub Secret with the new value from the log.
+- **Check token health:** scan workflow logs for any "refresh token rotated" warnings from Strava. If you see one, update the corresponding GitHub Secret with the new value from the log. Withings and Garmin store their rotated tokens themselves (see below).
 
 ## Annual rhythm (you)
 
@@ -62,9 +62,14 @@ All on GitHub Actions. View runs at `github.com/<user>/personal-training-mcp/act
 
 ### "Withings workflow failing with 401"
 
-Same pattern as Strava — refresh token rotated. Check logs for the new value, update `WITHINGS_REFRESH_TOKEN` and `WITHINGS_ACCESS_TOKEN` secrets.
+**Where the live token lives:** the `withings` row in `service_credentials`, not the `WITHINGS_REFRESH_TOKEN` secret. Withings issues a new refresh token on every refresh and invalidates the previous one, so each run saves the new token in its own transaction straight after refreshing — a sync that fails later in the same run still keeps it. The secret is only the seed used when that row doesn't exist yet.
 
-If both tokens are completely expired (unused for months), re-run `python scripts/withings_auth.py` to bootstrap fresh tokens.
+**Likely cause:** the stored token was revoked or expired (e.g. unused for months, or access withdrawn in the Withings app), or a run refreshed but could not store the new token (`withings.refresh_token.save_failed` in the log).
+
+**Fix:**
+1. Re-run `python scripts/withings_auth.py` locally with `DATABASE_URL` set (as in `.env`). It writes the fresh refresh token straight to the `withings` row.
+2. Update the `WITHINGS_REFRESH_TOKEN` (and `WITHINGS_ACCESS_TOKEN`) GitHub Secrets with the printed values, so the seed is current too
+3. Re-trigger the workflow
 
 ### "Garmin workflow failing"
 
@@ -122,7 +127,7 @@ A required secret is missing. Check Settings → Secrets and variables → Actio
 Treat all credentials as rotatable. Practical timeline:
 
 - **Strava refresh tokens:** rotate automatically with each token refresh. Update the secret when the workflow logs a rotation warning.
-- **Withings refresh tokens:** same — log-triggered.
+- **Withings refresh tokens:** rotate on every refresh and are stored in `service_credentials`, so they need no manual upkeep. Re-bootstrap only when the workflow starts failing on auth.
 - **Garmin tokens:** rotate on every refresh and are stored in `service_credentials`, so they need no manual upkeep. Re-bootstrap only when the workflow starts failing on auth.
 - **Supabase database password:** rotate via Supabase dashboard if you ever suspect exposure. Update `DATABASE_URL` secret immediately.
 - **Notion integration token:** stable until you revoke it. If suspected exposure, revoke via Notion settings and generate a new one.
