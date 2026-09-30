@@ -6,9 +6,10 @@ registered with FastMCP in server.py; the implementations are exercised
 directly in unit tests with mocked sessions.
 """
 
+import math
 from datetime import UTC, datetime, time, timedelta
 from datetime import date as date_type
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID
 
 from sqlalchemy import desc, func, select
@@ -21,7 +22,11 @@ from training_pipeline.derived.weekly_load import (
     sum_by_week_and_sport,
 )
 from training_pipeline.notion_sync.client import NotionClient
-from training_pipeline.notion_sync.plan_mirror import mirror_plan
+from training_pipeline.notion_sync.plan_mirror import (
+    INTENSITY_OPTIONS,
+    SESSION_TYPE_ALIASES,
+    mirror_plan,
+)
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
@@ -734,6 +739,52 @@ def readiness_today() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# Length caps on free text that flows into Notion and the calendar feed.
+MAX_TITLE_CHARS = 200
+MAX_TAG_CHARS = 200
+MAX_NOTES_CHARS = 2000
+MAX_DESCRIPTION_CHARS = 4000
+
+# Accepted plan session types: the documented enum plus the synonyms the
+# Notion mirror already normalizes. Anything else would silently become
+# "Other" downstream.
+PLAN_SESSION_TYPES = frozenset(SESSION_TYPE_ALIASES) | {"other"}
+
+
+def _reject(tool: str, problems: list[str]) -> NoReturn:
+    """Reject a write with every problem listed so the caller can fix them in one retry."""
+    logger.warning("mcp.write_rejected", tool=tool, problems=problems)
+    raise ValueError(f"{tool} rejected, nothing saved: " + "; ".join(problems))
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _parse_iso_date(raw: str) -> date_type | None:
+    """Parse strict ``YYYY-MM-DD``; Python 3.11+ fromisoformat also takes forms Notion rejects."""
+    try:
+        parsed = date_type.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.isoformat() == raw else None
+
+
+def _text_problem(label: str, value: Any, max_chars: int) -> str | None:
+    """Return a problem for a non-string or over-long optional text field."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return f"{label} must be a string"
+    if len(value) > max_chars:
+        return f"{label} must be at most {max_chars} characters (got {len(value)})"
+    return None
+
+
 def _log_session(
     session: Session,
     activity_id: str | None,
@@ -742,26 +793,45 @@ def _log_session(
     notes: str | None,
     tags: list[str] | None,
 ) -> dict[str, Any]:
+    problems: list[str] = []
+    has_notes = isinstance(notes, str) and bool(notes.strip())
+    if activity_id is None and rpe is None and pain_score is None and not has_notes and not tags:
+        problems.append("provide at least one of activity_id, rpe, pain_score, notes or tags")
+
     linked_activity: UUID | None = None
     if activity_id is not None:
         try:
             linked_activity = UUID(activity_id)
-        except ValueError as exc:
-            raise ValueError(f"activity_id is not a valid UUID: {activity_id}") from exc
-        exists = session.get(Activity, linked_activity)
-        if exists is None:
-            raise ValueError(f"activity not found: {activity_id}")
+        except ValueError:
+            problems.append(f"activity_id is not a valid UUID: {activity_id}")
+        else:
+            if session.get(Activity, linked_activity) is None:
+                problems.append(f"activity not found: {activity_id}")
 
-    if rpe is not None and not 1 <= int(rpe) <= 10:
-        raise ValueError("rpe must be between 1 and 10")
-    if pain_score is not None and not 0 <= int(pain_score) <= 10:
-        raise ValueError("pain_score must be between 0 and 10")
+    if rpe is not None and not (_is_int(rpe) and 1 <= rpe <= 10):
+        problems.append("rpe must be an integer between 1 and 10")
+    if pain_score is not None and not (_is_int(pain_score) and 0 <= pain_score <= 10):
+        problems.append("pain_score must be an integer between 0 and 10")
+    notes_problem = _text_problem("notes", notes, MAX_NOTES_CHARS)
+    if notes_problem:
+        problems.append(notes_problem)
+    if tags is not None:
+        if not isinstance(tags, list):
+            problems.append("tags must be a list of strings")
+        else:
+            for idx, tag in enumerate(tags):
+                if not isinstance(tag, str) or not tag.strip():
+                    problems.append(f"tags[{idx}] must be a non-empty string")
+                elif len(tag) > MAX_TAG_CHARS:
+                    problems.append(f"tags[{idx}] must be at most {MAX_TAG_CHARS} characters")
+    if problems:
+        _reject("log_session", problems)
 
     log = ManualLog(
         logged_at=datetime.now(UTC),
         activity_id=linked_activity,
-        rpe=int(rpe) if rpe is not None else None,
-        pain_score=int(pain_score) if pain_score is not None else None,
+        rpe=rpe,
+        pain_score=pain_score,
         notes=notes,
         tags=list(tags) if tags else None,
     )
@@ -797,33 +867,128 @@ def log_session(
         return _log_session(session, activity_id, rpe, pain_score, notes, tags)
 
 
-def _validate_exercises(session_index: int, raw: Any) -> None:
+def _exercise_problems(session_index: int, raw: Any) -> list[str]:
     if raw is None:
-        return
+        return []
     if not isinstance(raw, list):
-        raise ValueError(f"session[{session_index}].exercises must be a list")
+        return [f"session[{session_index}].exercises must be a list"]
+    problems: list[str] = []
     for ex_index, item in enumerate(raw):
+        prefix = f"session[{session_index}].exercises[{ex_index}]"
         if not isinstance(item, dict):
-            raise ValueError(f"session[{session_index}].exercises[{ex_index}] must be a dict")
+            problems.append(f"{prefix} must be a dict")
+            continue
         name = item.get("name")
         if not isinstance(name, str) or not name.strip():
-            raise ValueError(
-                f"session[{session_index}].exercises[{ex_index}].name must be a non-empty string"
-            )
-        if "sets" in item and not isinstance(item["sets"], int):
-            raise ValueError(f"session[{session_index}].exercises[{ex_index}].sets must be an int")
-        if "reps" in item and not isinstance(item["reps"], int | str):
-            raise ValueError(
-                f"session[{session_index}].exercises[{ex_index}].reps must be int or str"
-            )
-        if "weight_kg" in item and not isinstance(item["weight_kg"], int | float):
-            raise ValueError(
-                f"session[{session_index}].exercises[{ex_index}].weight_kg must be a number"
-            )
-        if "notes" in item and not isinstance(item["notes"], str):
-            raise ValueError(
-                f"session[{session_index}].exercises[{ex_index}].notes must be a string"
-            )
+            problems.append(f"{prefix}.name must be a non-empty string")
+        if "sets" in item and not _is_int(item["sets"]):
+            problems.append(f"{prefix}.sets must be an int")
+        if "reps" in item and not (_is_int(item["reps"]) or isinstance(item["reps"], str)):
+            problems.append(f"{prefix}.reps must be int or str")
+        if "weight_kg" in item and not _is_number(item["weight_kg"]):
+            problems.append(f"{prefix}.weight_kg must be a number")
+        if "notes" in item:
+            if not isinstance(item["notes"], str):
+                problems.append(f"{prefix}.notes must be a string")
+            elif len(item["notes"]) > MAX_NOTES_CHARS:
+                problems.append(f"{prefix}.notes must be at most {MAX_NOTES_CHARS} characters")
+    return problems
+
+
+def _is_hh_mm(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%H:%M")
+    except ValueError:
+        return False
+    return True
+
+
+def _plan_session_problems(index: int, item: Any, week_of: date_type | None) -> list[str]:
+    """Problems with one plan session. ``week_of`` is None when it didn't parse."""
+    prefix = f"session[{index}]"
+    if not isinstance(item, dict):
+        return [f"{prefix} must be a dict"]
+    problems: list[str] = []
+
+    raw_date = item.get("date")
+    if not isinstance(raw_date, str):
+        problems.append(f"{prefix}.date is required as an ISO date (YYYY-MM-DD)")
+    else:
+        session_date = _parse_iso_date(raw_date)
+        if session_date is None:
+            problems.append(f"{prefix}.date is not an ISO date (YYYY-MM-DD): {raw_date!r}")
+        elif week_of is not None:
+            week_end = week_of + timedelta(days=6)
+            if not week_of <= session_date <= week_end:
+                problems.append(
+                    f"{prefix}.date {raw_date} is outside the week "
+                    f"{week_of.isoformat()}..{week_end.isoformat()}"
+                )
+
+    session_type = item.get("session_type")
+    if not isinstance(session_type, str) or session_type.strip().lower() not in PLAN_SESSION_TYPES:
+        problems.append(
+            f"{prefix}.session_type must be one of {sorted(PLAN_SESSION_TYPES)}, "
+            f"got {session_type!r}"
+        )
+
+    if "duration_min" in item and not (_is_int(item["duration_min"]) and item["duration_min"] > 0):
+        problems.append(f"{prefix}.duration_min must be a positive integer")
+
+    start_time = item.get("time")
+    if start_time is not None and not (isinstance(start_time, str) and _is_hh_mm(start_time)):
+        problems.append(f'{prefix}.time must be "HH:MM" (24h), got {start_time!r}')
+
+    intensity = item.get("intensity")
+    if intensity is not None and not (
+        isinstance(intensity, str) and intensity.strip().title() in INTENSITY_OPTIONS
+    ):
+        problems.append(
+            f"{prefix}.intensity must be one of {sorted(INTENSITY_OPTIONS)}, got {intensity!r}"
+        )
+
+    for key, cap in (
+        ("title", MAX_TITLE_CHARS),
+        ("description", MAX_DESCRIPTION_CHARS),
+        ("notes", MAX_NOTES_CHARS),
+    ):
+        text_problem = _text_problem(f"{prefix}.{key}", item.get(key), cap)
+        if text_problem:
+            problems.append(text_problem)
+
+    problems.extend(_exercise_problems(index, item.get("exercises")))
+    return problems
+
+
+def _validate_weekly_plan(week_of: date_type | str, plan: Any, notes: Any) -> date_type:
+    """Check the whole plan up front; raise one error listing every problem."""
+    problems: list[str] = []
+    parsed_week: date_type | None = None
+    if isinstance(week_of, date_type):
+        parsed_week = week_of
+    else:
+        parsed_week = _parse_iso_date(week_of)
+        if parsed_week is None:
+            problems.append(f"week_of is not an ISO date (YYYY-MM-DD): {week_of!r}")
+    is_monday = parsed_week is not None and parsed_week.weekday() == 0
+    if parsed_week is not None and not is_monday:
+        problems.append(f"week_of must be a Monday, got {parsed_week.isoformat()}")
+
+    if not isinstance(plan, list):
+        problems.append("plan must be a list of dicts")
+    else:
+        # The date-range check needs a valid week; skip it rather than pile on.
+        range_week = parsed_week if is_monday else None
+        for idx, item in enumerate(plan):
+            problems.extend(_plan_session_problems(idx, item, range_week))
+
+    notes_problem = _text_problem("notes", notes, MAX_NOTES_CHARS)
+    if notes_problem:
+        problems.append(notes_problem)
+
+    if problems or parsed_week is None:
+        _reject("save_weekly_plan", problems)
+    return parsed_week
 
 
 def _mirror_plan_to_notion(
@@ -860,14 +1025,11 @@ def _mirror_plan_to_notion(
 
 def _save_weekly_plan(
     session: Session,
-    week_of: date_type,
+    week_of: date_type | str,
     plan: list[dict[str, Any]],
     notes: str,
 ) -> dict[str, Any]:
-    if not isinstance(plan, list) or not all(isinstance(item, dict) for item in plan):
-        raise ValueError("plan must be a list of dicts")
-    for idx, item in enumerate(plan):
-        _validate_exercises(idx, item.get("exercises"))
+    week_of = _validate_weekly_plan(week_of, plan, notes)
 
     previous = list(
         session.scalars(
@@ -925,9 +1087,8 @@ def _save_weekly_plan(
 
 
 def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") -> dict[str, Any]:
-    parsed_week = date_type.fromisoformat(week_of)
     with get_session() as session:
-        return _save_weekly_plan(session, parsed_week, plan, notes)
+        return _save_weekly_plan(session, week_of, plan, notes)
 
 
 def _sync_plan_to_notion(session: Session) -> dict[str, Any]:
@@ -940,10 +1101,30 @@ def sync_plan_to_notion() -> dict[str, Any]:
         return _sync_plan_to_notion(session)
 
 
-def _update_athlete_context(session: Session, updates: dict[str, Any]) -> dict[str, Any]:
+def _athlete_context_problems(updates: dict[str, Any]) -> list[str]:
+    """Type-check known fields; ``None`` is allowed and clears the field."""
+    problems: list[str] = []
     unknown = set(updates) - set(ATHLETE_CONTEXT_FIELDS)
     if unknown:
-        raise ValueError(f"unsupported athlete_context fields: {sorted(unknown)}")
+        problems.append(f"unsupported athlete_context fields: {sorted(unknown)}")
+    for key in ("ftp_watts", "max_hr"):
+        value = updates.get(key)
+        if value is not None and not (_is_int(value) and value > 0):
+            problems.append(f"{key} must be a positive integer")
+    weight = updates.get("body_weight_kg")
+    if weight is not None and not (_is_number(weight) and weight > 0):
+        problems.append("body_weight_kg must be a positive number")
+    for key, cap in (("current_phase", MAX_TITLE_CHARS), ("notes", MAX_NOTES_CHARS)):
+        text_problem = _text_problem(key, updates.get(key), cap)
+        if text_problem:
+            problems.append(text_problem)
+    return problems
+
+
+def _update_athlete_context(session: Session, updates: dict[str, Any]) -> dict[str, Any]:
+    problems = _athlete_context_problems(updates)
+    if problems:
+        _reject("update_athlete_context", problems)
 
     values: dict[str, Any] = {"id": 1, "updated_at": datetime.now(UTC)}
     for field in ATHLETE_CONTEXT_FIELDS:

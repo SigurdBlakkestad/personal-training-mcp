@@ -664,7 +664,7 @@ def test_save_weekly_plan_supersedes_previous(session: FakeSession) -> None:
     result = tools._save_weekly_plan(
         session,
         week_of=week,
-        plan=[{"date": "2026-05-05", "session_type": "easy run", "duration_min": 30}],
+        plan=[{"date": "2026-05-05", "session_type": "running", "duration_min": 30}],
         notes="hold easy",
     )
 
@@ -682,7 +682,7 @@ def test_save_weekly_plan_mirrors_to_notion_when_content_changed(
     previous = WeeklyPlan(
         week_of=week,
         version=1,
-        plan=[{"date": "2026-05-05", "session_type": "easy run"}],
+        plan=[{"date": "2026-05-05", "session_type": "running"}],
         is_current=True,
     )
     previous.id = uuid4()
@@ -701,7 +701,7 @@ def test_save_weekly_plan_mirrors_to_notion_when_content_changed(
     result = tools._save_weekly_plan(
         session,
         week_of=week,
-        plan=[{"date": "2026-05-05", "session_type": "hard intervals"}],
+        plan=[{"date": "2026-05-05", "session_type": "cycling"}],
         notes="",
     )
 
@@ -715,7 +715,7 @@ def test_save_weekly_plan_skips_mirror_when_content_unchanged(
     session: FakeSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     week = date(2026, 5, 4)
-    identical_plan = [{"date": "2026-05-05", "session_type": "easy run"}]
+    identical_plan = [{"date": "2026-05-05", "session_type": "running"}]
     previous = WeeklyPlan(
         week_of=week,
         version=1,
@@ -764,7 +764,7 @@ def test_save_weekly_plan_save_still_succeeds_when_mirror_fails(
     result = tools._save_weekly_plan(
         session,
         week_of=week,
-        plan=[{"date": "2026-05-05", "session_type": "easy run"}],
+        plan=[{"date": "2026-05-05", "session_type": "running"}],
         notes="",
     )
 
@@ -899,6 +899,187 @@ def test_save_weekly_plan_rejects_malformed_exercises(session: FakeSession) -> N
             plan=[{"exercises": "Squat 5x5"}],
             notes="",
         )
+
+
+def _valid_session(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "date": "2026-05-05",
+        "session_type": "running",
+        "title": "Easy run",
+        "duration_min": 40,
+        "description": "Z2 by feel",
+    }
+    base.update(overrides)
+    return base
+
+
+def _assert_nothing_written(session: FakeSession) -> None:
+    assert session.added == []
+    assert session.execute_calls == []
+    assert session.flush_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("week_of", "plan", "notes", "expected"),
+    [
+        ("05/04/2026", [_valid_session()], "", r"week_of is not an ISO date"),
+        (date(2026, 5, 5), [_valid_session(date="2026-05-06")], "", r"week_of must be a Monday"),
+        (date(2026, 5, 4), [_valid_session(date=None)], "", r"session\[0\]\.date is required"),
+        (date(2026, 5, 4), [_valid_session(date="5 May")], "", r"session\[0\]\.date is not an ISO"),
+        (date(2026, 5, 4), [_valid_session(date="2026-05-11")], "", r"outside the week"),
+        (date(2026, 5, 4), [_valid_session(date="2026-05-03")], "", r"outside the week"),
+        (date(2026, 5, 4), [_valid_session(session_type="easy run")], "", r"session_type"),
+        (date(2026, 5, 4), [_valid_session(session_type=None)], "", r"session_type"),
+        (date(2026, 5, 4), [_valid_session(duration_min="45")], "", r"duration_min"),
+        (date(2026, 5, 4), [_valid_session(duration_min=45.5)], "", r"duration_min"),
+        (date(2026, 5, 4), [_valid_session(duration_min=True)], "", r"duration_min"),
+        (date(2026, 5, 4), [_valid_session(title="x" * 201)], "", r"title must be at most 200"),
+        (date(2026, 5, 4), [_valid_session(notes="x" * 2001)], "", r"notes must be at most 2000"),
+        (date(2026, 5, 4), [_valid_session(description=42)], "", r"description must be a string"),
+        (date(2026, 5, 4), ["not a dict"], "", r"session\[0\] must be a dict"),
+        ("20260504", [_valid_session()], "", r"week_of is not an ISO date"),
+        (date(2026, 5, 4), [_valid_session(date="20260505")], "", r"date is not an ISO date"),
+        (date(2026, 5, 4), [_valid_session(time="7am")], "", r"session\[0\]\.time"),
+        (date(2026, 5, 4), [_valid_session(intensity="Threshold")], "", r"intensity"),
+        (date(2026, 5, 4), [_valid_session()], "x" * 2001, r"^.*: notes must be at most 2000"),
+    ],
+)
+def test_save_weekly_plan_rejects_invalid_input(
+    session: FakeSession, week_of: date | str, plan: list[Any], notes: str, expected: str
+) -> None:
+    with pytest.raises(ValueError, match=expected):
+        tools._save_weekly_plan(session, week_of=week_of, plan=plan, notes=notes)
+    _assert_nothing_written(session)
+
+
+def test_save_weekly_plan_lists_every_problem_at_once(session: FakeSession) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        tools._save_weekly_plan(
+            session,
+            week_of="2026-05-04",
+            plan=[
+                _valid_session(date="2026-06-01"),
+                _valid_session(session_type="yoga", duration_min="an hour"),
+            ],
+            notes="",
+        )
+    message = str(excinfo.value)
+    assert message.startswith("save_weekly_plan rejected, nothing saved: ")
+    assert "session[0].date 2026-06-01 is outside the week 2026-05-04..2026-05-10" in message
+    assert "session[1].session_type" in message
+    assert "session[1].duration_min" in message
+    _assert_nothing_written(session)
+
+
+def test_save_weekly_plan_accepts_iso_string_week_and_aliases(session: FakeSession) -> None:
+    session.dispatch = lambda stmt: []
+    session.scalar_dispatch = lambda stmt: 0
+    plan = [
+        _valid_session(date="2026-05-04"),
+        _valid_session(
+            date="2026-05-10",
+            session_type="Strength",
+            title="x" * 200,
+            time="17:30",
+            intensity="hard",
+        ),
+        {"date": "2026-05-07", "session_type": "rest"},
+    ]
+
+    result = tools._save_weekly_plan(session, week_of="2026-05-04", plan=plan, notes="deload")
+
+    assert result["week_of"] == "2026-05-04"
+    assert result["sessions"] == 3
+    stored = next(o for o in session.added if isinstance(o, WeeklyPlan))
+    assert stored.plan == plan  # saved unchanged
+    assert stored.week_of == date(2026, 5, 4)
+
+
+def test_log_session_rejects_all_empty_input(session: FakeSession) -> None:
+    with pytest.raises(ValueError, match="provide at least one of"):
+        tools._log_session(
+            session, activity_id=None, rpe=None, pain_score=None, notes="  ", tags=[]
+        )
+    _assert_nothing_written(session)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"rpe": "7"}, r"rpe must be an integer"),
+        ({"pain_score": 2.5}, r"pain_score must be an integer"),
+        ({"notes": "x" * 2001}, r"notes must be at most 2000"),
+        ({"tags": ["ok", ""]}, r"tags\[1\] must be a non-empty string"),
+        ({"tags": "base"}, r"tags must be a list"),
+        ({"activity_id": "not-a-uuid"}, r"activity_id is not a valid UUID"),
+    ],
+)
+def test_log_session_rejects_invalid_input(
+    session: FakeSession, kwargs: dict[str, Any], expected: str
+) -> None:
+    args: dict[str, Any] = {
+        "activity_id": None,
+        "rpe": None,
+        "pain_score": None,
+        "notes": None,
+        "tags": None,
+    }
+    args.update(kwargs)
+    with pytest.raises(ValueError, match=expected):
+        tools._log_session(session, **args)
+    _assert_nothing_written(session)
+
+
+def test_log_session_lists_every_problem_at_once(session: FakeSession) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        tools._log_session(
+            session, activity_id=str(uuid4()), rpe=11, pain_score=-1, notes=None, tags=None
+        )
+    message = str(excinfo.value)
+    assert "activity not found" in message
+    assert "rpe" in message
+    assert "pain_score" in message
+    _assert_nothing_written(session)
+
+
+@pytest.mark.parametrize(
+    ("updates", "expected"),
+    [
+        ({"ftp_watts": "abc"}, r"ftp_watts must be a positive integer"),
+        ({"ftp_watts": 0}, r"ftp_watts must be a positive integer"),
+        ({"max_hr": 185.5}, r"max_hr must be a positive integer"),
+        ({"body_weight_kg": "80"}, r"body_weight_kg must be a positive number"),
+        ({"body_weight_kg": True}, r"body_weight_kg must be a positive number"),
+        ({"body_weight_kg": float("inf")}, r"body_weight_kg must be a positive number"),
+        ({"current_phase": "x" * 201}, r"current_phase must be at most 200"),
+        ({"notes": 5}, r"notes must be a string"),
+    ],
+)
+def test_update_athlete_context_rejects_invalid_values(
+    session: FakeSession, updates: dict[str, Any], expected: str
+) -> None:
+    with pytest.raises(ValueError, match=expected):
+        tools._update_athlete_context(session, updates)
+    _assert_nothing_written(session)
+
+
+def test_update_athlete_context_allows_clearing_and_float_weight(session: FakeSession) -> None:
+    row = AthleteContext(
+        id=1,
+        ftp_watts=210,
+        max_hr=None,
+        body_weight_kg=81.4,
+        current_phase=None,
+        notes=None,
+        updated_at=datetime(2026, 5, 14, 9, 0, tzinfo=UTC),
+    )
+    session.get_returns[(AthleteContext, 1)] = row
+
+    tools._update_athlete_context(
+        session, {"ftp_watts": 210, "max_hr": None, "body_weight_kg": 81.4, "notes": None}
+    )
+
+    assert len(session.execute_calls) == 1
 
 
 def test_update_athlete_context_rejects_unknown_fields(session: FakeSession) -> None:
