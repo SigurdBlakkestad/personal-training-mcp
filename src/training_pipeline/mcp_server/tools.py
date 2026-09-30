@@ -6,6 +6,7 @@ registered with FastMCP in server.py; the implementations are exercised
 directly in unit tests with mocked sessions.
 """
 
+import math
 from datetime import UTC, datetime, time, timedelta
 from datetime import date as date_type
 from typing import Any, NoReturn
@@ -21,7 +22,11 @@ from training_pipeline.derived.weekly_load import (
     sum_by_week_and_sport,
 )
 from training_pipeline.notion_sync.client import NotionClient
-from training_pipeline.notion_sync.plan_mirror import SESSION_TYPE_ALIASES, mirror_plan
+from training_pipeline.notion_sync.plan_mirror import (
+    INTENSITY_OPTIONS,
+    SESSION_TYPE_ALIASES,
+    mirror_plan,
+)
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
@@ -736,6 +741,7 @@ def readiness_today() -> dict[str, Any]:
 
 # Length caps on free text that flows into Notion and the calendar feed.
 MAX_TITLE_CHARS = 200
+MAX_TAG_CHARS = 200
 MAX_NOTES_CHARS = 2000
 MAX_DESCRIPTION_CHARS = 4000
 
@@ -753,6 +759,19 @@ def _reject(tool: str, problems: list[str]) -> NoReturn:
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _parse_iso_date(raw: str) -> date_type | None:
+    """Parse strict ``YYYY-MM-DD``; Python 3.11+ fromisoformat also takes forms Notion rejects."""
+    try:
+        parsed = date_type.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.isoformat() == raw else None
 
 
 def _text_problem(label: str, value: Any, max_chars: int) -> str | None:
@@ -803,8 +822,8 @@ def _log_session(
             for idx, tag in enumerate(tags):
                 if not isinstance(tag, str) or not tag.strip():
                     problems.append(f"tags[{idx}] must be a non-empty string")
-                elif len(tag) > MAX_TITLE_CHARS:
-                    problems.append(f"tags[{idx}] must be at most {MAX_TITLE_CHARS} characters")
+                elif len(tag) > MAX_TAG_CHARS:
+                    problems.append(f"tags[{idx}] must be at most {MAX_TAG_CHARS} characters")
     if problems:
         _reject("log_session", problems)
 
@@ -866,9 +885,7 @@ def _exercise_problems(session_index: int, raw: Any) -> list[str]:
             problems.append(f"{prefix}.sets must be an int")
         if "reps" in item and not (_is_int(item["reps"]) or isinstance(item["reps"], str)):
             problems.append(f"{prefix}.reps must be int or str")
-        if "weight_kg" in item and not (
-            isinstance(item["weight_kg"], int | float) and not isinstance(item["weight_kg"], bool)
-        ):
+        if "weight_kg" in item and not _is_number(item["weight_kg"]):
             problems.append(f"{prefix}.weight_kg must be a number")
         if "notes" in item:
             if not isinstance(item["notes"], str):
@@ -876,6 +893,14 @@ def _exercise_problems(session_index: int, raw: Any) -> list[str]:
             elif len(item["notes"]) > MAX_NOTES_CHARS:
                 problems.append(f"{prefix}.notes must be at most {MAX_NOTES_CHARS} characters")
     return problems
+
+
+def _is_hh_mm(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%H:%M")
+    except ValueError:
+        return False
+    return True
 
 
 def _plan_session_problems(index: int, item: Any, week_of: date_type | None) -> list[str]:
@@ -889,18 +914,16 @@ def _plan_session_problems(index: int, item: Any, week_of: date_type | None) -> 
     if not isinstance(raw_date, str):
         problems.append(f"{prefix}.date is required as an ISO date (YYYY-MM-DD)")
     else:
-        try:
-            session_date = date_type.fromisoformat(raw_date)
-        except ValueError:
+        session_date = _parse_iso_date(raw_date)
+        if session_date is None:
             problems.append(f"{prefix}.date is not an ISO date (YYYY-MM-DD): {raw_date!r}")
-        else:
-            if week_of is not None:
-                week_end = week_of + timedelta(days=6)
-                if not week_of <= session_date <= week_end:
-                    problems.append(
-                        f"{prefix}.date {raw_date} is outside the week "
-                        f"{week_of.isoformat()}..{week_end.isoformat()}"
-                    )
+        elif week_of is not None:
+            week_end = week_of + timedelta(days=6)
+            if not week_of <= session_date <= week_end:
+                problems.append(
+                    f"{prefix}.date {raw_date} is outside the week "
+                    f"{week_of.isoformat()}..{week_end.isoformat()}"
+                )
 
     session_type = item.get("session_type")
     if not isinstance(session_type, str) or session_type.strip().lower() not in PLAN_SESSION_TYPES:
@@ -911,6 +934,18 @@ def _plan_session_problems(index: int, item: Any, week_of: date_type | None) -> 
 
     if "duration_min" in item and not (_is_int(item["duration_min"]) and item["duration_min"] > 0):
         problems.append(f"{prefix}.duration_min must be a positive integer")
+
+    start_time = item.get("time")
+    if start_time is not None and not (isinstance(start_time, str) and _is_hh_mm(start_time)):
+        problems.append(f'{prefix}.time must be "HH:MM" (24h), got {start_time!r}')
+
+    intensity = item.get("intensity")
+    if intensity is not None and not (
+        isinstance(intensity, str) and intensity.strip().title() in INTENSITY_OPTIONS
+    ):
+        problems.append(
+            f"{prefix}.intensity must be one of {sorted(INTENSITY_OPTIONS)}, got {intensity!r}"
+        )
 
     for key, cap in (
         ("title", MAX_TITLE_CHARS),
@@ -932,9 +967,8 @@ def _validate_weekly_plan(week_of: date_type | str, plan: Any, notes: Any) -> da
     if isinstance(week_of, date_type):
         parsed_week = week_of
     else:
-        try:
-            parsed_week = date_type.fromisoformat(week_of)
-        except ValueError:
+        parsed_week = _parse_iso_date(week_of)
+        if parsed_week is None:
             problems.append(f"week_of is not an ISO date (YYYY-MM-DD): {week_of!r}")
     is_monday = parsed_week is not None and parsed_week.weekday() == 0
     if parsed_week is not None and not is_monday:
@@ -1078,9 +1112,7 @@ def _athlete_context_problems(updates: dict[str, Any]) -> list[str]:
         if value is not None and not (_is_int(value) and value > 0):
             problems.append(f"{key} must be a positive integer")
     weight = updates.get("body_weight_kg")
-    if weight is not None and not (
-        isinstance(weight, int | float) and not isinstance(weight, bool) and weight > 0
-    ):
+    if weight is not None and not (_is_number(weight) and weight > 0):
         problems.append("body_weight_kg must be a positive number")
     for key, cap in (("current_phase", MAX_TITLE_CHARS), ("notes", MAX_NOTES_CHARS)):
         text_problem = _text_problem(key, updates.get(key), cap)

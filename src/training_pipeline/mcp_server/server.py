@@ -134,7 +134,7 @@ def log_session(
     """Write a manual log. If activity_id is provided the log is linked to it.
 
     At least one field must be set. rpe is 1-10, pain_score 0-10, notes at most
-    2000 characters. Invalid input is rejected with every problem listed and
+    2000 characters, each tag at most 200. Invalid input is rejected with every problem listed and
     nothing is saved.
     """
     return tools.log_session(

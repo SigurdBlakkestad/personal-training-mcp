@@ -937,6 +937,10 @@ def _assert_nothing_written(session: FakeSession) -> None:
         (date(2026, 5, 4), [_valid_session(notes="x" * 2001)], "", r"notes must be at most 2000"),
         (date(2026, 5, 4), [_valid_session(description=42)], "", r"description must be a string"),
         (date(2026, 5, 4), ["not a dict"], "", r"session\[0\] must be a dict"),
+        ("20260504", [_valid_session()], "", r"week_of is not an ISO date"),
+        (date(2026, 5, 4), [_valid_session(date="20260505")], "", r"date is not an ISO date"),
+        (date(2026, 5, 4), [_valid_session(time="7am")], "", r"session\[0\]\.time"),
+        (date(2026, 5, 4), [_valid_session(intensity="Threshold")], "", r"intensity"),
         (date(2026, 5, 4), [_valid_session()], "x" * 2001, r"^.*: notes must be at most 2000"),
     ],
 )
@@ -972,7 +976,13 @@ def test_save_weekly_plan_accepts_iso_string_week_and_aliases(session: FakeSessi
     session.scalar_dispatch = lambda stmt: 0
     plan = [
         _valid_session(date="2026-05-04"),
-        _valid_session(date="2026-05-10", session_type="Strength", title="x" * 200),
+        _valid_session(
+            date="2026-05-10",
+            session_type="Strength",
+            title="x" * 200,
+            time="17:30",
+            intensity="hard",
+        ),
         {"date": "2026-05-07", "session_type": "rest"},
     ]
 
@@ -1040,6 +1050,7 @@ def test_log_session_lists_every_problem_at_once(session: FakeSession) -> None:
         ({"max_hr": 185.5}, r"max_hr must be a positive integer"),
         ({"body_weight_kg": "80"}, r"body_weight_kg must be a positive number"),
         ({"body_weight_kg": True}, r"body_weight_kg must be a positive number"),
+        ({"body_weight_kg": float("inf")}, r"body_weight_kg must be a positive number"),
         ({"current_phase": "x" * 201}, r"current_phase must be at most 200"),
         ({"notes": 5}, r"notes must be a string"),
     ],
