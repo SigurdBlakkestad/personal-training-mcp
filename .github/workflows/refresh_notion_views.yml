@@ -8,9 +8,14 @@ on:
     - cron: "30 5 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: notion-views
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write

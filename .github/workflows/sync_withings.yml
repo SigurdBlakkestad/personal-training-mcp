@@ -5,9 +5,16 @@ on:
     - cron: "30 5 * * *"
   workflow_dispatch:
 
+# Withings rotates its refresh token on every refresh, same as Garmin: queue
+# runs so an overlap can't store the invalidated token.
+concurrency:
+  group: withings-token
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write

@@ -5,9 +5,18 @@ on:
     - cron: "45 5 * * *"
   workflow_dispatch:
 
+# Garmin rotates its refresh token on every refresh and invalidates the old
+# one, so two overlapping runs (e.g. a manual dispatch during the scheduled
+# run) can leave the invalidated token stored. Queue runs; never cancel one
+# mid-token-write.
+concurrency:
+  group: garmin-token
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # No continue-on-error: Garmin is its own workflow, so a red run here never
     # blocks Strava/Withings (those run on their own schedules). Failing loud is
     # deliberate — a silent "success" once hid a 4-month token outage.

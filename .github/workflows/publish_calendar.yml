@@ -15,13 +15,23 @@ on:
       - "src/training_pipeline/calendar_publish/**"
       - ".github/workflows/publish_calendar.yml"
 
+# The cron backstop and the workflow_run trigger usually both fire each
+# morning; queue them so they don't race each other's push.
+concurrency:
+  group: calendar-publish
+  cancel-in-progress: false
+
 permissions:
   contents: write
   issues: write
 
 jobs:
   publish:
+    # workflow_run fires on every Notion Mirror completion, failed ones
+    # included; only follow a successful mirror. The cron backstop still runs.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
