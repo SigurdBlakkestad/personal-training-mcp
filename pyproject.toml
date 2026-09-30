@@ -6,6 +6,30 @@ requires-python = ">=3.12"
 readme = "README.md"
 license = { text = "MIT" }
 
+dependencies = [
+    "psycopg[binary]>=3.2",
+    # 2.1 types Row indexing per column; keep local and fresh envs on the same
+    # typing so mypy agrees everywhere.
+    "sqlalchemy>=2.1,<2.2",
+    "alembic>=1.13",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.5",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "structlog>=24.4",
+    "tenacity>=9.0",
+    "mcp[cli]>=1.0",
+    "fastmcp>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "notion-client>=2.2,<2.6",
+    "ics>=0.7",
+    # Floor bumped to the known-good version — older releases fail Garmin's SSO
+    # with "Failed to retrieve social profile". Keep this current when Garmin
+    # changes their auth (roughly yearly); it pulls a compatible `garth`.
+    "garminconnect>=0.3.15",
+]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

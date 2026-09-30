@@ -61,7 +61,7 @@ The code is already written. To run your own copy you only need to set up your o
 3. **Run the local install + first migration**, per `OPERATIONS.md` → "Local development":
    ```
    python3.12 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
+   pip install -e ".[dev]"
    alembic upgrade head        # creates tables in your Supabase project
    ```
 4. **Trigger the workflows** in your fork's Actions tab to do the first sync (`sync_strava`, `sync_withings`, etc.). After that they run on schedule.

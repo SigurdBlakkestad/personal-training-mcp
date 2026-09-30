@@ -91,7 +91,7 @@ Skipping step 5 leaves the run on the rejected token and the new secret is ignor
 **Garmin changed their auth:**
 1. Check https://github.com/cyberjunky/python-garminconnect/issues for current status
 2. Wait for a library update if one's not out yet
-3. Bump version in `requirements.txt` when fix is released
+3. Bump the `garminconnect` floor in `pyproject.toml` when fix is released
 4. Re-bootstrap with `scripts/garmin_auth.py` (the new version may need a fresh login)
 
 Garmin has its own workflow, so a red run never blocks the other syncs. Don't panic-fix.
@@ -157,7 +157,7 @@ The ingestors are idempotent on (source, source_id) so this is safe to re-run.
 # One-time setup
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # Copy .env.example and fill in values
 cp .env.example .env
