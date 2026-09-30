@@ -15,12 +15,6 @@ on:
       - "src/training_pipeline/calendar_publish/**"
       - ".github/workflows/publish_calendar.yml"
 
-# The cron backstop and the workflow_run trigger usually both fire each
-# morning; queue them so they don't race each other's push.
-concurrency:
-  group: calendar-publish
-  cancel-in-progress: false
-
 permissions:
   contents: write
   issues: write
@@ -30,8 +24,16 @@ jobs:
     # workflow_run fires on every Notion Mirror completion, failed ones
     # included; only follow a successful mirror. The cron backstop still runs.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # The cron backstop and the workflow_run trigger usually both fire each
+    # morning; queue them so they don't race each other's push. Job-level, not
+    # workflow-level: a run whose job the `if:` skips must not take the single
+    # pending slot and cancel a real publish waiting there.
+    concurrency:
+      group: calendar-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Backstop; the step timeout below fails loud (see sync_garmin.yml).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +47,7 @@ jobs:
         run: pip install -e .
 
       - name: Regenerate training.ics
+        timeout-minutes: 10
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LOG_LEVEL: INFO

@@ -19,6 +19,7 @@ concurrency:
 jobs:
   compute:
     runs-on: ubuntu-latest
+    # Backstop; the step timeout below fails loud (see sync_garmin.yml).
     timeout-minutes: 30
     permissions:
       contents: read
@@ -36,6 +37,7 @@ jobs:
         run: pip install -e .
 
       - name: Compute derived metrics
+        timeout-minutes: 20
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ATHLETE_FTP: ${{ secrets.ATHLETE_FTP }}

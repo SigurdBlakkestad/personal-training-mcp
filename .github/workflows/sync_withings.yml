@@ -14,7 +14,8 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Backstop; the step timeout below fails loud (see sync_garmin.yml).
+    timeout-minutes: 20
     permissions:
       contents: read
       issues: write
@@ -31,6 +32,7 @@ jobs:
         run: pip install -e .
 
       - name: Sync Withings
+        timeout-minutes: 10
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
