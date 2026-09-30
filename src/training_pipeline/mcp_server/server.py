@@ -119,6 +119,14 @@ def readiness_today() -> dict[str, Any]:
     date intensity minutes, weight delta vs 7d avg, current TSB, and recent
     RPE trend. Prefer ``garmin_readiness.score`` when present; fall back to
     HRV/RHR/sleep heuristics otherwise.
+
+    ``last_night`` merges every source for the newest date, with Garmin
+    authoritative and Withings only filling fields Garmin lacks;
+    ``last_night.data_date`` / ``days_old`` say which night it actually is.
+    ``fitness.intensity_minutes_week_to_date`` sums Garmin's moderate and
+    vigorous minutes Monday through today (vigorous not doubled). ``stale``
+    is true when the newest Garmin daily summary is more than one day old
+    (or missing): treat the physiology as out of date, not as last night.
     """
     return tools.readiness_today()
 
