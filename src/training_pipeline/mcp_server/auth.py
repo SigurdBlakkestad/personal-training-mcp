@@ -66,6 +66,24 @@ def _split_csv(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
 
+_REQUIRED_SETTINGS = (
+    "MCP_GITHUB_CLIENT_ID",
+    "MCP_GITHUB_CLIENT_SECRET",
+    "MCP_PUBLIC_URL",
+    "MCP_ALLOWED_GITHUB_LOGINS",
+)
+_OAUTH_SETTINGS = (*_REQUIRED_SETTINGS, "MCP_ALLOWED_GITHUB_IDS")
+
+
+def _config_error(message: str, **context: object) -> RuntimeError:
+    """Log an invalid-configuration error, then hand it back for raising.
+
+    Context carries setting names or non-secret values only — never secrets.
+    """
+    logger.error("mcp_server.auth.config_invalid", detail=message, **context)
+    return RuntimeError(message)
+
+
 def build_auth(settings: Settings) -> RestrictedGitHubProvider | None:
     """Return the configured OAuth provider, or None if OAuth is not set up.
 
@@ -75,50 +93,52 @@ def build_auth(settings: Settings) -> RestrictedGitHubProvider | None:
     nothing, or an unusable id allowlist — raises instead of silently running
     open. Whitespace-only values count as unset.
     """
-    allowed = _split_csv(settings.MCP_ALLOWED_GITHUB_LOGINS)
-    allowed_ids = frozenset(_split_csv(settings.MCP_ALLOWED_GITHUB_IDS))
-    required = {
-        "MCP_GITHUB_CLIENT_ID": bool(settings.MCP_GITHUB_CLIENT_ID.strip()),
-        "MCP_GITHUB_CLIENT_SECRET": bool(settings.MCP_GITHUB_CLIENT_SECRET.strip()),
-        "MCP_PUBLIC_URL": bool(settings.MCP_PUBLIC_URL.strip()),
-        "MCP_ALLOWED_GITHUB_LOGINS": bool(allowed),
-    }
-    ids_given = bool(settings.MCP_ALLOWED_GITHUB_IDS.strip())
+    values = {name: str(getattr(settings, name)).strip() for name in _OAUTH_SETTINGS}
     # Any non-whitespace value (even an allowlist of only commas) signals intent.
-    intent = ids_given or any(
-        value.strip()
-        for value in (
-            settings.MCP_GITHUB_CLIENT_ID,
-            settings.MCP_GITHUB_CLIENT_SECRET,
-            settings.MCP_PUBLIC_URL,
-            settings.MCP_ALLOWED_GITHUB_LOGINS,
-        )
-    )
-    if not intent:
+    if not any(values.values()):
         return None
 
-    missing = [name for name, present in required.items() if not present]
+    allowed = _split_csv(values["MCP_ALLOWED_GITHUB_LOGINS"])
+    allowed_ids = frozenset(_split_csv(values["MCP_ALLOWED_GITHUB_IDS"]))
+    missing = [name for name in _REQUIRED_SETTINGS if not values[name]]
+    if values["MCP_ALLOWED_GITHUB_LOGINS"] and not allowed:  # only commas/whitespace
+        missing.append("MCP_ALLOWED_GITHUB_LOGINS")
     if missing:
-        raise RuntimeError(
+        raise _config_error(
             "MCP OAuth is partly configured; refusing to start with the endpoint "
             f"open. Missing or empty: {', '.join(missing)}. Set all of them to "
-            "require GitHub login, or unset every MCP OAuth setting to run open."
+            "require GitHub login, or unset every MCP OAuth setting to run open.",
+            missing=missing,
         )
-    if ids_given and not allowed_ids:
-        raise RuntimeError("MCP_ALLOWED_GITHUB_IDS is set but lists no ids.")
+    if values["MCP_ALLOWED_GITHUB_IDS"] and not allowed_ids:
+        raise _config_error(
+            "MCP_ALLOWED_GITHUB_IDS is set but lists no ids.",
+            setting="MCP_ALLOWED_GITHUB_IDS",
+        )
     non_numeric = sorted(i for i in allowed_ids if not (i.isascii() and i.isdecimal()))
     if non_numeric:
-        raise RuntimeError(
+        raise _config_error(
             "MCP_ALLOWED_GITHUB_IDS must list numeric GitHub user ids; "
-            f"not numeric: {', '.join(non_numeric)}"
+            f"not numeric: {', '.join(non_numeric)}",
+            setting="MCP_ALLOWED_GITHUB_IDS",
+            invalid_ids=non_numeric,
+        )
+    # GitHub's `sub` claim is str(id); "0123" would never match it.
+    non_canonical = sorted(i for i in allowed_ids if str(int(i)) != i)
+    if non_canonical:
+        raise _config_error(
+            "MCP_ALLOWED_GITHUB_IDS must list GitHub user ids without leading "
+            f"zeros; has leading zeros: {', '.join(non_canonical)}",
+            setting="MCP_ALLOWED_GITHUB_IDS",
+            invalid_ids=non_canonical,
         )
 
-    base_url = settings.MCP_PUBLIC_URL.strip().rstrip("/")
+    base_url = values["MCP_PUBLIC_URL"].rstrip("/")
     return RestrictedGitHubProvider(
         allowed_logins=allowed,
         allowed_ids=allowed_ids,
-        client_id=settings.MCP_GITHUB_CLIENT_ID.strip(),
-        client_secret=settings.MCP_GITHUB_CLIENT_SECRET.strip(),
+        client_id=values["MCP_GITHUB_CLIENT_ID"],
+        client_secret=values["MCP_GITHUB_CLIENT_SECRET"],
         # base_url is the public origin: FastMCP serves the OAuth + discovery
         # routes (/.well-known/*, /authorize, /token, /register, /auth/callback)
         # at the root, and the MCP endpoint itself at /mcp. The app must be

@@ -32,8 +32,9 @@ else:
         "mcp_server.app.ready_unauthenticated",
         detail=(
             "MCP endpoint is OPEN — no OAuth configured. Anyone with the URL can "
-            "read and write your data. Set MCP_GITHUB_CLIENT_ID, "
-            "MCP_GITHUB_CLIENT_SECRET, MCP_PUBLIC_URL and MCP_ALLOWED_GITHUB_LOGINS "
-            "to require GitHub login."
+            "read and write your data. To require GitHub login, set all four of "
+            "MCP_GITHUB_CLIENT_ID, MCP_GITHUB_CLIENT_SECRET, MCP_PUBLIC_URL and "
+            "MCP_ALLOWED_GITHUB_LOGINS together (a partial set fails startup); "
+            "optionally add MCP_ALLOWED_GITHUB_IDS to pin logins to GitHub user ids."
         ),
     )

@@ -7,6 +7,7 @@ import pytest
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubProvider
 
+from training_pipeline.mcp_server import auth as auth_module
 from training_pipeline.mcp_server.auth import RestrictedGitHubProvider, build_auth
 
 
@@ -38,40 +39,28 @@ def _access(login: str | None) -> AccessToken:
     return AccessToken(token="t", client_id="c", scopes=[], expires_at=None, claims=claims)
 
 
-class _StubProvider(RestrictedGitHubProvider):
-    """Bypass GitHubProvider's network setup; drive verify_token directly."""
-
-    def __init__(self, allowed: set[str], upstream: AccessToken | None) -> None:
-        self._allowed_logins = {login.lower() for login in allowed}
-        self._upstream = upstream
-
-    async def verify_token(self, token: str) -> AccessToken | None:  # type: ignore[override]
-        access = self._upstream
-        if access is None:
-            return None
-        login = (access.claims or {}).get("login")
-        if not login or login.lower() not in self._allowed_logins:
-            return None
-        return access
-
-
-async def test_allowed_login_passes() -> None:
-    p = _StubProvider({"sigurdblakkestad"}, _access("SigurdBlakkestad"))
+async def test_allowed_login_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _real_provider(monkeypatch, "", _access("sigurdblakkestad"))
     assert await p.verify_token("t") is not None
 
 
-async def test_disallowed_login_rejected() -> None:
-    p = _StubProvider({"sigurdblakkestad"}, _access("someone-else"))
+async def test_allowed_login_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _real_provider(monkeypatch, "", _access("SigurdBlakkestad"))
+    assert await p.verify_token("t") is not None
+
+
+async def test_disallowed_login_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _real_provider(monkeypatch, "", _access("someone-else"))
     assert await p.verify_token("t") is None
 
 
-async def test_missing_login_claim_fails_closed() -> None:
-    p = _StubProvider({"sigurdblakkestad"}, _access(None))
+async def test_missing_login_claim_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _real_provider(monkeypatch, "", _access(None))
     assert await p.verify_token("t") is None
 
 
-async def test_upstream_rejection_propagates() -> None:
-    p = _StubProvider({"sigurdblakkestad"}, None)
+async def test_upstream_rejection_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _real_provider(monkeypatch, "", None)
     assert await p.verify_token("t") is None
 
 
@@ -148,7 +137,7 @@ def test_build_auth_passes_id_allowlist() -> None:
 
 
 def _real_provider(
-    monkeypatch: pytest.MonkeyPatch, ids: str, upstream: AccessToken
+    monkeypatch: pytest.MonkeyPatch, ids: str, upstream: AccessToken | None
 ) -> RestrictedGitHubProvider:
     provider = build_auth(_settings(**_FULL, MCP_ALLOWED_GITHUB_IDS=ids))  # type: ignore[arg-type]
     assert provider is not None
@@ -210,3 +199,32 @@ def test_build_auth_rejects_non_ascii_digit_ids() -> None:
     s = _settings(**_FULL, MCP_ALLOWED_GITHUB_IDS="١٢٣")
     with pytest.raises(RuntimeError, match="not numeric"):
         build_auth(s)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("ids", ["0123", "123, 00", "007, 42"])
+def test_build_auth_rejects_ids_with_leading_zeros(ids: str) -> None:
+    # GitHub's `sub` claim is the canonical decimal id, so "0123" never matches.
+    s = _settings(**_FULL, MCP_ALLOWED_GITHUB_IDS=ids)
+    with pytest.raises(RuntimeError, match="has leading zeros: ") as excinfo:
+        build_auth(s)  # type: ignore[arg-type]
+    bad = {i.strip() for i in ids.split(",") if i.strip() != str(int(i))}
+    assert all(i in str(excinfo.value) for i in bad)
+
+
+def test_build_auth_logs_config_error_without_secret_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def record(event: str, **kw: object) -> None:
+        events.append((event, kw))
+
+    monkeypatch.setattr(auth_module.logger, "error", record)
+    s = _settings(MCP_GITHUB_CLIENT_ID="id", MCP_GITHUB_CLIENT_SECRET="s3cret-value")
+    with pytest.raises(RuntimeError):
+        build_auth(s)  # type: ignore[arg-type]
+    assert len(events) == 1
+    event, kw = events[0]
+    assert event == "mcp_server.auth.config_invalid"
+    assert kw["missing"] == ["MCP_PUBLIC_URL", "MCP_ALLOWED_GITHUB_LOGINS"]
+    assert "s3cret-value" not in repr(kw)
