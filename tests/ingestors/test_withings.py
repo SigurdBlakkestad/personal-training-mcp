@@ -1,4 +1,3 @@
-import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
@@ -8,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy.orm import Session
 
+from training_pipeline.ingestors.base import IngestionResult
 from training_pipeline.ingestors.http import HttpClient
 from training_pipeline.ingestors.withings import (
     WithingsAPIError,
@@ -25,6 +25,17 @@ class FakeSettings:
 @pytest.fixture(autouse=True)
 def patch_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("training_pipeline.ingestors.withings.get_settings", lambda: FakeSettings())
+
+
+@pytest.fixture(autouse=True)
+def credential_store(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """In-memory stand-in for service_credentials; keeps every test off the DB."""
+    store: dict[str, str] = {}
+    monkeypatch.setattr("training_pipeline.ingestors.withings.load_service_credential", store.get)
+    monkeypatch.setattr(
+        "training_pipeline.ingestors.withings.save_service_credential", store.__setitem__
+    )
+    return store
 
 
 def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> HttpClient:
@@ -58,64 +69,179 @@ def _token_body(refresh: str = "rotated-refresh") -> dict[str, Any]:
     }
 
 
-def test_refresh_rotation_warns_and_persists_in_cursor(
-    caplog: pytest.LogCaptureFixture,
+def _empty_handler(
+    refresh: str = "rotated-refresh",
+    captured_refresh: list[str] | None = None,
+) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/oauth2":
+            if captured_refresh is not None:
+                form = dict(httpx.QueryParams(request.read().decode()))
+                captured_refresh.append(form["refresh_token"])
+            return httpx.Response(200, json=_envelope(_token_body(refresh)))
+        if request.url.path == "/measure":
+            return httpx.Response(200, json=_envelope({"measuregrps": []}))
+        if request.url.path == "/v2/measure":
+            return httpx.Response(200, json=_envelope({"activities": []}))
+        if request.url.path == "/v2/sleep":
+            return httpx.Response(200, json=_envelope({"series": []}))
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    return handler
+
+
+def _run_sync(
+    handler: Callable[[httpx.Request], httpx.Response],
+    session: MagicMock | None = None,
+    since: datetime = datetime(2026, 4, 15, tzinfo=UTC),
+) -> IngestionResult:
+    client = _make_client(handler)
+    ingestor = WithingsIngestor(http_client=client)
+    try:
+        return ingestor._sync(session if session is not None else _make_session(), since=since)
+    finally:
+        client.close()
+
+
+def test_rotated_refresh_token_saved_to_service_credentials(
+    credential_store: dict[str, str],
+) -> None:
+    result = _run_sync(_empty_handler("rotated-refresh"))
+
+    assert credential_store == {"withings": "rotated-refresh"}
+    # The token no longer rides on the run's cursor.
+    assert result.cursor is None
+
+
+def test_rotated_refresh_token_survives_failed_sync(
+    credential_store: dict[str, str],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v2/oauth2":
             return httpx.Response(200, json=_envelope(_token_body("rotated-refresh")))
         if request.url.path == "/measure":
-            return httpx.Response(200, json=_envelope({"measuregrps": []}))
-        if request.url.path == "/v2/measure":
-            return httpx.Response(200, json=_envelope({"activities": []}))
-        if request.url.path == "/v2/sleep":
-            return httpx.Response(200, json=_envelope({"series": []}))
+            return httpx.Response(200, json={"status": 503, "error": "try later"})
         raise AssertionError(f"unexpected path {request.url.path}")
 
-    client = _make_client(handler)
-    ingestor = WithingsIngestor(http_client=client)
-    session = _make_session()
+    with pytest.raises(WithingsAPIError):
+        _run_sync(handler)
 
-    try:
-        result = ingestor._sync(session, since=datetime(2026, 4, 15, tzinfo=UTC))
-    finally:
-        client.close()
-
-    assert result.cursor is not None
-    assert json.loads(result.cursor) == {"refresh_token": "rotated-refresh"}
+    assert credential_store == {"withings": "rotated-refresh"}
 
 
-def test_existing_cursor_refresh_token_used() -> None:
+def test_stored_refresh_token_preferred_over_secret(
+    credential_store: dict[str, str],
+) -> None:
+    credential_store["withings"] = "stored-refresh"
     captured: list[str] = []
 
+    _run_sync(_empty_handler("next-refresh", captured))
+
+    assert captured == ["stored-refresh"]
+    assert credential_store == {"withings": "next-refresh"}
+
+
+def test_secret_seeds_refresh_token_when_no_stored_row(
+    credential_store: dict[str, str],
+) -> None:
+    captured: list[str] = []
+
+    _run_sync(_empty_handler("next-refresh", captured))
+
+    assert captured == [FakeSettings.WITHINGS_REFRESH_TOKEN]
+    assert credential_store == {"withings": "next-refresh"}
+
+
+def _weigh_in(grpid: int, when: datetime, grams: int) -> dict[str, Any]:
+    return {
+        "grpid": grpid,
+        "date": int(when.timestamp()),
+        "measures": [{"value": grams, "type": 1, "unit": -3}],
+    }
+
+
+def test_body_measurements_fetched_by_lastupdate() -> None:
+    forms: list[dict[str, str]] = []
+    since = datetime(2026, 4, 15, 5, 32, tzinfo=UTC)
+    base = _empty_handler()
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/v2/oauth2":
-            form = dict(httpx.QueryParams(request.read().decode()))
-            captured.append(form["refresh_token"])
-            return httpx.Response(200, json=_envelope(_token_body("cursor-refresh")))
         if request.url.path == "/measure":
-            return httpx.Response(200, json=_envelope({"measuregrps": []}))
-        if request.url.path == "/v2/measure":
-            return httpx.Response(200, json=_envelope({"activities": []}))
-        if request.url.path == "/v2/sleep":
-            return httpx.Response(200, json=_envelope({"series": []}))
-        raise AssertionError(f"unexpected path {request.url.path}")
+            forms.append(dict(httpx.QueryParams(request.read().decode())))
+        return base(request)
 
-    stored_run = MagicMock()
-    stored_run.cursor = json.dumps({"refresh_token": "cursor-refresh"})
-    session = MagicMock(spec=Session)
-    session.scalar.return_value = stored_run
-    session.execute.return_value.scalar_one.return_value = True
+    _run_sync(handler, since=since)
 
+    assert len(forms) == 1
+    assert forms[0]["action"] == "getmeas"
+    assert forms[0]["lastupdate"] == str(int(since.timestamp()))
+    assert "startdate" not in forms[0]
+    assert "enddate" not in forms[0]
+
+
+def test_body_measurements_follow_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
+    forms: list[dict[str, str]] = []
+    first = _weigh_in(1, datetime(2026, 4, 14, 5, 0, tzinfo=UTC), 80500)
+    second = _weigh_in(2, datetime(2026, 4, 15, 5, 0, tzinfo=UTC), 80100)
+    base = _empty_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/measure":
+            return base(request)
+        form = dict(httpx.QueryParams(request.read().decode()))
+        forms.append(form)
+        if "offset" not in form:
+            page = {"measuregrps": [first], "more": 1, "offset": 1}
+        else:
+            page = {"measuregrps": [second], "more": 0, "offset": 0}
+        return httpx.Response(200, json=_envelope(page))
+
+    received: list[dict[str, Any]] = []
     client = _make_client(handler)
     ingestor = WithingsIngestor(http_client=client)
+    original = ingestor.upsert_body_measurement
 
+    def capture(s: Any, payload: dict[str, Any]) -> str:
+        received.append(payload)
+        return original(s, payload)
+
+    monkeypatch.setattr(ingestor, "upsert_body_measurement", capture)
     try:
-        ingestor._sync(session, since=datetime(2026, 4, 15, tzinfo=UTC))
+        result = ingestor._sync(_make_session(), since=datetime(2026, 4, 13, tzinfo=UTC))
     finally:
         client.close()
 
-    assert captured == ["cursor-refresh"]
+    assert [form.get("offset") for form in forms] == [None, "1"]
+    assert forms[1]["lastupdate"] == forms[0]["lastupdate"]
+    assert [row["weight_kg"] for row in received] == [
+        pytest.approx(80.5),
+        pytest.approx(80.1),
+    ]
+    assert result.records_processed == 2
+
+
+def test_pagination_without_a_new_offset_raises() -> None:
+    base = _empty_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/measure":
+            return httpx.Response(200, json=_envelope({"measuregrps": [], "more": 1}))
+        return base(request)
+
+    with pytest.raises(WithingsAPIError):
+        _run_sync(handler)
+
+
+def test_default_since_is_last_successful_run_start() -> None:
+    session = _make_session()
+    started = datetime(2026, 4, 15, 5, 30, tzinfo=UTC)
+    session.scalar.return_value = started
+
+    since = WithingsIngestor(http_client=MagicMock())._compute_since(session)
+
+    assert since == started
+    stmt = session.scalar.call_args.args[0]
+    assert [col.name for col in stmt.selected_columns] == ["started_at"]
 
 
 def test_status_non_zero_raises() -> None:

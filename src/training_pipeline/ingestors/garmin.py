@@ -13,21 +13,22 @@ from typing import Any
 from uuid import UUID
 
 from garminconnect import GarminConnectAuthenticationError
-from sqlalchemy import delete, desc, func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
 from structlog.stdlib import BoundLogger
 
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
 from training_pipeline.shared.config import get_settings
-from training_pipeline.shared.db import get_session
+from training_pipeline.shared.credentials import (
+    load_service_credential,
+    save_service_credential,
+)
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
     Activity,
     ActivityExerciseSet,
     ActivityLap,
     IngestionRun,
-    ServiceCredential,
 )
 
 logger = get_logger(__name__)
@@ -309,12 +310,7 @@ def decode_tokens_to_dir(b64: str) -> str:
 
 def load_stored_tokens() -> str | None:
     """Return the persisted tokenstore payload, or None before the first run."""
-    with get_session() as session:
-        return session.scalar(
-            select(ServiceCredential.payload).where(
-                ServiceCredential.service == GARMIN_CREDENTIAL_SERVICE
-            )
-        )
+    return load_service_credential(GARMIN_CREDENTIAL_SERVICE)
 
 
 def save_stored_tokens(payload: str) -> None:
@@ -324,17 +320,7 @@ def save_stored_tokens(payload: str) -> None:
     refresh token the moment it issues a new one, so a rotation that is rolled
     back with a failed sync leaves the next run replaying a dead token.
     """
-    with get_session() as session:
-        stmt = pg_insert(ServiceCredential).values(
-            service=GARMIN_CREDENTIAL_SERVICE,
-            payload=payload,
-        )
-        session.execute(
-            stmt.on_conflict_do_update(
-                index_elements=["service"],
-                set_={"payload": stmt.excluded.payload, "updated_at": func.now()},
-            )
-        )
+    save_service_credential(GARMIN_CREDENTIAL_SERVICE, payload)
 
 
 def _serialize_tokens(client: Any) -> str | None:

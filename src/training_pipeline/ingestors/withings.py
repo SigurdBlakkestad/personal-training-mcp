@@ -1,4 +1,3 @@
-import json
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -9,12 +8,17 @@ from sqlalchemy.orm import Session
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
 from training_pipeline.ingestors.http import HttpClient
 from training_pipeline.shared.config import get_settings
+from training_pipeline.shared.credentials import (
+    load_service_credential,
+    save_service_credential,
+)
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import IngestionRun
 
 logger = get_logger(__name__)
 
 WITHINGS_API_BASE = "https://wbsapi.withings.net"
+WITHINGS_CREDENTIAL_SERVICE = "withings"
 WITHINGS_DEFAULT_LOOKBACK_DAYS = 30
 
 # Withings measure type codes → body_measurements column name.
@@ -51,30 +55,29 @@ class WithingsIngestor(IngestorBase):
         log = logger.bind(source="withings")
         settings = get_settings()
 
-        initial_refresh = self._lookup_refresh_token(session, settings.WITHINGS_REFRESH_TOKEN)
+        # The stored row is the live token; the secret only seeds the first run.
+        initial_refresh = (
+            load_service_credential(WITHINGS_CREDENTIAL_SERVICE) or settings.WITHINGS_REFRESH_TOKEN
+        )
         access_token, new_refresh = self._refresh_access_token(
             client_id=settings.WITHINGS_CLIENT_ID,
             client_secret=settings.WITHINGS_CLIENT_SECRET,
             refresh_token=initial_refresh,
         )
-        if new_refresh != initial_refresh:
-            log.warning(
-                "withings.refresh_token.rotated",
-                message=(
-                    "Withings issued a new refresh_token. "
-                    "Update GitHub Secret WITHINGS_REFRESH_TOKEN with the value stored in "
-                    "ingestion_runs.cursor."
-                ),
-            )
+        # Withings invalidates the old refresh token on every refresh, so persist
+        # the new one now, outside the ingestion session: a later failure in
+        # this run rolls that session back, and the rotation must survive it.
+        save_service_credential(WITHINGS_CREDENTIAL_SERVICE, new_refresh)
+        log.info("withings.refresh_token.stored", rotated=new_refresh != initial_refresh)
 
         effective_since = since if since is not None else self._compute_since(session)
         now_utc = datetime.now(UTC)
         log.info("withings.fetch.start", since=effective_since.isoformat())
 
-        result = IngestionResult(cursor=json.dumps({"refresh_token": new_refresh}))
+        result = IngestionResult()
         auth_headers = {"Authorization": f"Bearer {access_token}"}
 
-        self._sync_body_measurements(session, auth_headers, effective_since, now_utc, result, log)
+        self._sync_body_measurements(session, auth_headers, effective_since, result, log)
         self._sync_daily(session, auth_headers, effective_since, now_utc, result, log)
 
         log.info(
@@ -85,29 +88,14 @@ class WithingsIngestor(IngestorBase):
         )
         return result
 
-    def _lookup_refresh_token(self, session: Session, fallback: str) -> str:
-        latest = session.scalar(
-            select(IngestionRun)
-            .where(IngestionRun.source == "withings", IngestionRun.status == "success")
-            .order_by(desc(IngestionRun.finished_at))
-            .limit(1)
-        )
-        if latest is None or not latest.cursor:
-            return fallback
-        try:
-            data = json.loads(latest.cursor)
-        except (json.JSONDecodeError, TypeError):
-            return fallback
-        token = data.get("refresh_token") if isinstance(data, dict) else None
-        if isinstance(token, str) and token:
-            return token
-        return fallback
-
     def _compute_since(self, session: Session) -> datetime:
         latest = session.scalar(
-            select(IngestionRun.finished_at)
+            # started_at, not finished_at: the next run fetches by `lastupdate`,
+            # so anything Withings received while this run was in flight must
+            # still be newer than the cutoff.
+            select(IngestionRun.started_at)
             .where(IngestionRun.source == "withings", IngestionRun.status == "success")
-            .order_by(desc(IngestionRun.finished_at))
+            .order_by(desc(IngestionRun.started_at))
             .limit(1)
         )
         if latest is None:
@@ -160,33 +148,39 @@ class WithingsIngestor(IngestorBase):
         session: Session,
         headers: Mapping[str, str],
         since: datetime,
-        now: datetime,
         result: IngestionResult,
         log: Any,
     ) -> None:
-        body = self._post_action(
-            "/measure",
-            data={
-                "action": "getmeas",
-                "startdate": int(since.timestamp()),
-                "enddate": int(now.timestamp()),
-            },
-            headers=headers,
-        )
-        groups = body.get("measuregrps") or []
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            measurement = self._map_measure_group(group)
-            if measurement is None:
-                continue
-            outcome = self.upsert_body_measurement(session, measurement)
-            result.records_processed += 1
-            if outcome == "inserted":
-                result.records_inserted += 1
-            else:
-                result.records_updated += 1
-        log.info("withings.body.done", groups=len(groups))
+        # `lastupdate` filters on when Withings received the measurement, not
+        # when it was taken, so a weigh-in that reaches the cloud after a run
+        # (scale offline, late Wi-Fi sync) is still picked up by the next one.
+        data: dict[str, Any] = {"action": "getmeas", "lastupdate": int(since.timestamp())}
+        group_count = 0
+        pages = 0
+        while True:
+            body = self._post_action("/measure", data=data, headers=headers)
+            pages += 1
+            groups = body.get("measuregrps") or []
+            group_count += len(groups)
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                measurement = self._map_measure_group(group)
+                if measurement is None:
+                    continue
+                outcome = self.upsert_body_measurement(session, measurement)
+                result.records_processed += 1
+                if outcome == "inserted":
+                    result.records_inserted += 1
+                else:
+                    result.records_updated += 1
+            if not body.get("more"):
+                break
+            offset = body.get("offset")
+            if not isinstance(offset, int) or offset <= data.get("offset", 0):
+                raise WithingsAPIError(f"withings getmeas more=1 without a new offset: {offset!r}")
+            data = {**data, "offset": offset}
+        log.info("withings.body.done", groups=group_count, pages=pages)
 
     def _map_measure_group(self, group: dict[str, Any]) -> dict[str, Any] | None:
         epoch = group.get("date")
