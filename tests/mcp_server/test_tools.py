@@ -751,8 +751,9 @@ def test_readiness_rpe_counts_every_session_in_window(session: FakeSession) -> N
     assert rpe["count"] == 12
     rpe_sql = next(s for s in seen if "manual_logs" in s)
     assert "LIMIT" not in rpe_sql
-    # The 21-day horizon starts at local (Oslo) midnight.
-    assert "00:00:00+02:00" in rpe_sql or "00:00:00+01:00" in rpe_sql
+    # 21 local days including today, starting at Oslo (not UTC) midnight.
+    horizon = (local_today() - timedelta(days=20)).isoformat()
+    assert f"'{horizon} 00:00:00+02:00'" in rpe_sql or f"'{horizon} 00:00:00+01:00'" in rpe_sql
 
 
 def test_readiness_rpe_counts_relogged_session_once(session: FakeSession) -> None:

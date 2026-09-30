@@ -633,11 +633,11 @@ def _weight_vs_preceding_week(session: Session, today: date_type) -> dict[str, A
     )
     latest_weight = by_day.get(latest_day)
     preceding = [w for day, w in by_day.items() if avg_start <= day <= avg_end]
-    avg = round(sum(preceding) / len(preceding), 3) if preceding else None
+    avg = sum(preceding) / len(preceding) if preceding else None
     return {
         "date": latest_day.isoformat(),
         "weight_kg": latest_weight,
-        "weight_7d_avg": avg,
+        "weight_7d_avg": round(avg, 3) if avg is not None else None,
         "weight_7d_avg_date": avg_end.isoformat() if avg is not None else None,
         "delta_vs_7d": (
             round(latest_weight - avg, 3) if latest_weight is not None and avg is not None else None
@@ -664,7 +664,8 @@ def _latest_garmin_value(
 
 def _readiness_today(session: Session) -> dict[str, Any]:
     today = local_today()
-    horizon = today - timedelta(days=RPE_WINDOW_DAYS)
+    # RPE_WINDOW_DAYS local days, today included.
+    horizon = today - timedelta(days=RPE_WINDOW_DAYS - 1)
     horizon_dt = datetime.combine(horizon, time.min, tzinfo=athlete_tz())
     week_start = today - timedelta(days=today.weekday())
 
