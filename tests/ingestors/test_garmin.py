@@ -4,6 +4,7 @@ import base64
 import io
 import os
 import tarfile
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,11 +12,13 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from garminconnect import GarminConnectAuthenticationError, GarminConnectConnectionError
 from sqlalchemy.orm import Session
 
 from training_pipeline.ingestors.base import IngestionResult
 from training_pipeline.ingestors.garmin import (
     GARMIN_DEFAULT_LOOKBACK_DAYS,
+    GARMIN_OVERLAP_MARGIN_HOURS,
     GARMIN_PAGE_SIZE,
     GarminIngestor,
     _extract_hrv_ms,
@@ -227,7 +230,7 @@ def test_sync_activities_inserts_new_activity_when_no_strava_match() -> None:
     assert captured[0]["source_id"] == "1"
 
 
-def test_sync_activities_stops_when_existing_id_seen() -> None:
+def test_sync_activities_skips_existing_id_and_keeps_scanning() -> None:
     client = MagicMock()
     client.get_activities.return_value = [
         _garmin_activity(10),
@@ -248,15 +251,49 @@ def test_sync_activities_stops_when_existing_id_seen() -> None:
         client, session, datetime(2020, 1, 1, tzinfo=UTC), result, MagicMock()
     )
 
+    # 20 is already stored and skipped; 30 behind it is still reached.
+    assert result.records_processed == 2
+    assert result.records_inserted == 2
+
+
+def test_sync_activities_stores_late_upload_behind_stored_activity() -> None:
+    """Regression (#12): a workout that started before the previous run
+    finished but reached Garmin Connect after it must still be ingested, even
+    when a newer, already-stored activity sits in front of it."""
+    client = MagicMock()
+    client.get_activities.return_value = [
+        _garmin_activity(3, start="2026-04-10 07:00:00"),  # stored last run
+        _garmin_activity(2, start="2026-04-10 05:10:00"),  # uploaded late
+        _garmin_activity(1, start="2026-04-06 10:00:00"),  # beyond the overlap
+    ]
+    ingestor = GarminIngestor(client=client)
+    ingestor._activity_exists = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda s, sid: sid == "3"
+    )
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
+    captured: list[str] = []
+
+    def capture(s: Any, payload: dict[str, Any]) -> str:
+        captured.append(payload["source_id"])
+        return "inserted"
+
+    ingestor.upsert_activity = capture  # type: ignore[method-assign]
+
+    result = IngestionResult()
+    previous_run_finished = datetime(2026, 4, 10, 5, 47, tzinfo=UTC)
+    ingestor._sync_activities(client, _make_session(), previous_run_finished, result, MagicMock())
+
+    assert captured == ["2"]
     assert result.records_processed == 1
-    assert result.records_inserted == 1
 
 
-def test_sync_activities_stops_when_older_than_since() -> None:
+def test_sync_activities_stops_when_older_than_overlap_window() -> None:
+    since = datetime(2026, 4, 8, tzinfo=UTC)
+    beyond_overlap = since - timedelta(hours=GARMIN_OVERLAP_MARGIN_HOURS, minutes=1)
     client = MagicMock()
     client.get_activities.return_value = [
         _garmin_activity(1, start="2026-04-10 10:00:00"),
-        _garmin_activity(2, start="2026-04-05 10:00:00"),
+        _garmin_activity(2, start=beyond_overlap.strftime("%Y-%m-%d %H:%M:%S")),
     ]
     ingestor = GarminIngestor(client=client)
     ingestor._activity_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
@@ -264,8 +301,24 @@ def test_sync_activities_stops_when_older_than_since() -> None:
 
     session = _make_session()
     result = IngestionResult()
-    since = datetime(2026, 4, 8, tzinfo=UTC)
     ingestor._sync_activities(client, session, since, result, MagicMock())
+
+    assert result.records_processed == 1
+
+
+def test_sync_activities_backfill_stops_at_since_without_overlap() -> None:
+    client = MagicMock()
+    client.get_activities.return_value = [
+        _garmin_activity(1, start="2026-04-10 10:00:00"),
+        _garmin_activity(2, start="2026-04-07 10:00:00"),
+    ]
+    ingestor = GarminIngestor(client=client, backfill=True)
+    ingestor._activity_exists = MagicMock(return_value=False)  # type: ignore[method-assign]
+    ingestor._merge_into_strava_if_exists = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+    result = IngestionResult()
+    since = datetime(2026, 4, 8, tzinfo=UTC)
+    ingestor._sync_activities(client, _make_session(), since, result, MagicMock())
 
     assert result.records_processed == 1
 
@@ -613,6 +666,136 @@ def test_safe_call_returns_none_on_exception() -> None:
     log = MagicMock()
     assert ingestor._safe_call(boom, "2026-04-01", log, "user_summary") is None
     log.warning.assert_called_once()
+
+
+def _daily_client() -> MagicMock:
+    client = MagicMock()
+    client.get_user_summary.return_value = {"restingHeartRate": 48, "totalSteps": 11500}
+    client.get_sleep_data.return_value = {"dailySleepDTO": {"sleepTimeSeconds": 25200}}
+    client.get_hrv_data.return_value = {"hrvSummary": {"lastNightAvg": 61.5}}
+    client.get_training_readiness.return_value = [{"score": 70, "level": "MODERATE"}]
+    client.get_max_metrics.return_value = [{"generic": {"vo2MaxPreciseValue": 47.2}}]
+    client.get_intensity_minutes_data.return_value = {"moderateMinutes": 80}
+    client.get_respiration_data.return_value = {"avgWakingRespirationValue": 14.2}
+    return client
+
+
+_DAILY_METHODS = (
+    "get_user_summary",
+    "get_sleep_data",
+    "get_hrv_data",
+    "get_training_readiness",
+    "get_max_metrics",
+    "get_intensity_minutes_data",
+    "get_respiration_data",
+)
+
+
+def _run_daily_sync(
+    client: MagicMock, session: MagicMock | None = None
+) -> tuple[GarminIngestor, list[dict[str, Any]]]:
+    """Run a real ``_sync`` over two days with activities stubbed out."""
+    fixed_now = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+    ingestor = GarminIngestor(client=client, now=lambda: fixed_now)
+    ingestor._sync_activities = MagicMock()  # type: ignore[method-assign]
+    captured: list[dict[str, Any]] = []
+
+    def capture(s: Any, payload: dict[str, Any]) -> str:
+        captured.append(payload)
+        return "inserted"
+
+    ingestor.upsert_daily_summary = capture  # type: ignore[method-assign]
+    ingestor._sync(session or _make_session(), datetime(2026, 4, 1, 6, 0, tzinfo=UTC))
+    return ingestor, captured
+
+
+def test_sync_fails_when_every_daily_endpoint_fails_every_day() -> None:
+    """Regression (#17): a run where no daily endpoint answered must not be
+    recorded as a success."""
+    client = MagicMock()
+    for method in _DAILY_METHODS:
+        getattr(client, method).side_effect = RuntimeError("API changed")
+
+    session = _make_session()
+
+    with pytest.raises(RuntimeError, match="Every Garmin daily endpoint failed on all 2 day"):
+        _run_daily_sync(client, session)
+
+    # Activities stored earlier in the run are committed, not rolled back.
+    session.commit.assert_called_once()
+
+
+def test_sync_fails_when_an_endpoint_rejects_the_token() -> None:
+    client = _daily_client()
+    client.get_hrv_data.side_effect = GarminConnectAuthenticationError(
+        "Authentication failed: 401 Unauthorized"
+    )
+
+    with pytest.raises(GarminConnectAuthenticationError):
+        _run_daily_sync(client)
+
+
+def _forbidden_with_response() -> GarminConnectConnectionError:
+    exc = GarminConnectConnectionError("API client error (403): Forbidden")
+    exc.response = MagicMock(status_code=403)
+    return exc
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        # What garminconnect raises for an endpoint 403: status in the message only.
+        GarminConnectConnectionError("API call client error (403): API Error 403"),
+        _forbidden_with_response(),
+    ],
+)
+def test_sync_fails_when_an_endpoint_returns_403(
+    forbidden: GarminConnectConnectionError,
+) -> None:
+    client = _daily_client()
+    client.get_sleep_data.side_effect = forbidden
+
+    with pytest.raises(GarminConnectConnectionError):
+        _run_daily_sync(client)
+
+
+def test_sync_survives_one_failing_endpoint_and_stores_the_rest() -> None:
+    client = _daily_client()
+    client.get_hrv_data.side_effect = GarminConnectConnectionError("API client error (404)")
+
+    _, captured = _run_daily_sync(client)
+
+    assert len(captured) == 2
+    row = captured[0]
+    assert row["hrv_ms"] is None
+    assert row["resting_hr"] == 48
+    assert row["sleep_duration_seconds"] == 25200
+    assert row["training_readiness_score"] == 70
+    assert row["respiration_avg"] == 14.2
+
+
+def test_sync_survives_a_day_where_every_endpoint_failed() -> None:
+    client = _daily_client()
+    for method in _DAILY_METHODS:
+        good = getattr(client, method).return_value
+        getattr(client, method).side_effect = [RuntimeError("blip"), good]
+
+    _, captured = _run_daily_sync(client)
+
+    assert [row["date"] for row in captured] == [date(2026, 4, 2)]
+
+
+def test_safe_call_counts_failures_per_endpoint() -> None:
+    ingestor = GarminIngestor(client=MagicMock())
+    failures: Counter[str] = Counter()
+
+    def boom(_iso: str) -> Any:
+        raise RuntimeError("garmin endpoint down")
+
+    ingestor._safe_call(boom, "2026-04-01", MagicMock(), "hrv_data", failures)
+    ingestor._safe_call(boom, "2026-04-02", MagicMock(), "hrv_data", failures)
+
+    assert failures == Counter({"hrv_data": 2})
 
 
 def test_initialize_client_raises_without_token(monkeypatch: pytest.MonkeyPatch) -> None:

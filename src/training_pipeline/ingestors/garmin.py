@@ -3,13 +3,16 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
 import tarfile
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from garminconnect import GarminConnectAuthenticationError
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -32,6 +35,17 @@ logger = get_logger(__name__)
 GARMIN_CREDENTIAL_SERVICE = "garmin"
 GARMIN_DEFAULT_LOOKBACK_DAYS = 30
 GARMIN_PAGE_SIZE = 20
+# The activity feed is ordered by start time, but a workout reaches Garmin
+# Connect only when the watch syncs — possibly hours after a run has already
+# passed its start time. Re-scan this far behind the last successful run so
+# late uploads are still picked up; already-stored activities are skipped.
+GARMIN_OVERLAP_MARGIN_HOURS = 72
+# HTTP statuses meaning Garmin rejected the token. These never mean "no data
+# for this day" and must fail the run like a dead login would.
+GARMIN_AUTH_FAILURE_STATUSES: frozenset[int] = frozenset({401, 403})
+# garminconnect reports an endpoint's HTTP status only inside the message,
+# e.g. "API call client error (403): API Error 403".
+_API_ERROR_STATUS_RE = re.compile(r"API Error (\d{3})")
 STRAVA_DEDUPE_WINDOW_SECONDS = 60
 
 # Sports whose laps are worth storing, on top of the hasIntensityIntervals
@@ -439,6 +453,22 @@ def _extract_respiration_avg(respiration: Any) -> float | None:
     return None
 
 
+def _is_auth_failure(exc: Exception) -> bool:
+    """True when Garmin rejected the token rather than lacking data.
+
+    garminconnect raises ``GarminConnectAuthenticationError`` for 401s but
+    surfaces a 403 as a generic connection error, with the status on the
+    attached response when there is one and otherwise only in the message.
+    """
+    if isinstance(exc, GarminConnectAuthenticationError):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int):
+        match = _API_ERROR_STATUS_RE.search(str(exc))
+        status = int(match.group(1)) if match else None
+    return status in GARMIN_AUTH_FAILURE_STATUSES
+
+
 class GarminIngestor(IngestorBase):
     def __init__(
         self,
@@ -492,7 +522,7 @@ class GarminIngestor(IngestorBase):
         if self._client_factory is not None:
             return self._client_factory(tokenstore)
 
-        from garminconnect import Garmin  # type: ignore[import-untyped]
+        from garminconnect import Garmin
 
         client = Garmin()
         client.login(tokenstore=tokenstore)
@@ -551,6 +581,9 @@ class GarminIngestor(IngestorBase):
         result: IngestionResult,
         log: BoundLogger,
     ) -> None:
+        # Backfill re-processes everything from an explicit ``since``, so it
+        # needs no overlap; a scheduled run re-scans the overlap window.
+        cutoff = since if self._backfill else since - timedelta(hours=GARMIN_OVERLAP_MARGIN_HOURS)
         start = 0
         while True:
             batch = client.get_activities(start=start, limit=GARMIN_PAGE_SIZE) or []
@@ -562,13 +595,15 @@ class GarminIngestor(IngestorBase):
                 if start_time is None:
                     log.warning("garmin.activity.skip_no_start", id=activity.get("activityId"))
                     continue
-                if start_time < since:
+                if start_time < cutoff:
                     stop = True
                     break
                 source_id = str(activity["activityId"])
+                # A late upload can sit behind newer, already-stored
+                # activities, so a stored one is skipped rather than ending
+                # the scan.
                 if not self._backfill and self._activity_exists(session, source_id):
-                    stop = True
-                    break
+                    continue
                 mapped = self._map_activity(activity, start_time)
                 merged = self._merge_into_strava_if_exists(session, mapped, log)
                 if merged is not None:
@@ -762,25 +797,34 @@ class GarminIngestor(IngestorBase):
         else:
             earliest = today - timedelta(days=GARMIN_DEFAULT_LOOKBACK_DAYS)
             cursor = max(since.date(), earliest)
+        fetchers: dict[str, Callable[[str], Any]] = {
+            "user_summary": client.get_user_summary,
+            "sleep_data": client.get_sleep_data,
+            "hrv_data": client.get_hrv_data,
+            "training_readiness": client.get_training_readiness,
+            "max_metrics": client.get_max_metrics,
+            "intensity_minutes": client.get_intensity_minutes_data,
+            "respiration": client.get_respiration_data,
+        }
+        failures: Counter[str] = Counter()
+        days = 0
         while cursor <= today:
             iso = cursor.isoformat()
-            user_summary = self._safe_call(client.get_user_summary, iso, log, "user_summary")
-            sleep = self._safe_call(client.get_sleep_data, iso, log, "sleep_data")
-            hrv = self._safe_call(client.get_hrv_data, iso, log, "hrv_data")
-            readiness = self._safe_call(
-                client.get_training_readiness, iso, log, "training_readiness"
-            )
-            max_metrics = self._safe_call(client.get_max_metrics, iso, log, "max_metrics")
-            intensity = self._safe_call(
-                client.get_intensity_minutes_data, iso, log, "intensity_minutes"
-            )
-            respiration = self._safe_call(client.get_respiration_data, iso, log, "respiration")
-            if all(
-                v is None
-                for v in (user_summary, sleep, hrv, readiness, max_metrics, intensity, respiration)
-            ):
+            days += 1
+            payloads = {
+                endpoint: self._safe_call(fetch, iso, log, endpoint, failures)
+                for endpoint, fetch in fetchers.items()
+            }
+            if all(v is None for v in payloads.values()):
                 cursor += timedelta(days=1)
                 continue
+            user_summary = payloads["user_summary"]
+            sleep = payloads["sleep_data"]
+            hrv = payloads["hrv_data"]
+            readiness = payloads["training_readiness"]
+            max_metrics = payloads["max_metrics"]
+            intensity = payloads["intensity_minutes"]
+            respiration = payloads["respiration"]
             us = user_summary if isinstance(user_summary, dict) else {}
             readiness_score, readiness_level = _extract_readiness(readiness)
             vo2_running, vo2_cycling = _extract_vo2_max(max_metrics)
@@ -823,12 +867,27 @@ class GarminIngestor(IngestorBase):
                 result.records_updated += 1
             cursor += timedelta(days=1)
 
+        if not failures:
+            return
+        # A quiet day still has a user summary; every endpoint failing on
+        # every day means the session or the API is broken.
+        if all(failures[endpoint] == days for endpoint in fetchers):
+            # Keep the activities stored earlier in this run: the error is
+            # there to fail the run, not to discard what did sync.
+            session.commit()
+            raise RuntimeError(
+                f"Every Garmin daily endpoint failed on all {days} day(s) since "
+                f"{since.date().isoformat()}; see garmin.endpoint_failed warnings."
+            )
+        log.warning("garmin.daily.partial_failures", days=days, failures=dict(failures))
+
     def _safe_call(
         self,
         func: Callable[[str], Any],
         arg: str,
         log: BoundLogger,
         endpoint: str,
+        failures: Counter[str] | None = None,
     ) -> Any:
         """Call one Garmin endpoint, trading a failure for None.
 
@@ -836,15 +895,21 @@ class GarminIngestor(IngestorBase):
         HRV reading, an activity with no splits. Used for both the daily
         endpoints (``arg`` is an ISO date) and the per-activity detail ones
         (``arg`` is the Garmin activity id); either way one dead endpoint must
-        not take the whole sync down with it.
+        not take the whole sync down with it. A rejected token is the
+        exception: it is re-raised so the run fails loud. ``failures``, when
+        given, counts swallowed failures per endpoint.
         """
         try:
             return func(arg)
         except Exception as exc:  # noqa: BLE001 -- Garmin endpoints throw on missing data
+            if _is_auth_failure(exc):
+                raise
             log.warning(
                 "garmin.endpoint_failed",
                 endpoint=endpoint,
                 arg=arg,
                 error=str(exc),
             )
+            if failures is not None:
+                failures[endpoint] += 1
             return None
