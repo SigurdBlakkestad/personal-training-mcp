@@ -639,6 +639,12 @@ def _readiness_dispatch(
     return dispatch
 
 
+def _as_of(session: FakeSession) -> date:
+    """The date _readiness_today treats as today, so fixtures follow the
+    tool's own clock rather than a separately computed one."""
+    return date.fromisoformat(tools._readiness_today(session)["as_of"])
+
+
 def _garmin_summary(day: date, **fields: Any) -> DailySummary:
     return DailySummary(
         date=day,
@@ -652,7 +658,7 @@ def _garmin_summary(day: date, **fields: Any) -> DailySummary:
 def test_readiness_today_prefers_garmin_row_when_withings_shares_the_date(
     session: FakeSession,
 ) -> None:
-    today = datetime.now(UTC).date()
+    today = _as_of(session)
     withings = DailySummary(
         date=today,
         source="withings",
@@ -688,7 +694,7 @@ def test_readiness_today_prefers_garmin_row_when_withings_shares_the_date(
 
 
 def test_readiness_today_sums_intensity_minutes_week_to_date(session: FakeSession) -> None:
-    today = datetime.now(UTC).date()
+    today = _as_of(session)
     seen: list[str] = []
     session.dispatch = _readiness_dispatch(
         [_garmin_summary(today, intensity_minutes_moderate=5, intensity_minutes_vigorous=0)],
@@ -720,14 +726,20 @@ def test_readiness_today_intensity_none_without_garmin_rows(session: FakeSession
 
 
 def test_readiness_today_flags_stale_garmin_data(session: FakeSession) -> None:
-    three_days_ago = datetime.now(UTC).date() - timedelta(days=3)
+    three_days_ago = _as_of(session) - timedelta(days=3)
     garmin = _garmin_summary(three_days_ago, sleep_score=75, hrv_ms=60.0)
-    session.dispatch = _readiness_dispatch([garmin])
+    seen: list[str] = []
+    session.dispatch = _readiness_dispatch([garmin], seen=seen)
     session.scalar_dispatch = lambda stmt: garmin
 
     result = tools._readiness_today(session)
 
     assert result["stale"] is True
+    # last_night is anchored on Garmin's newest date, so a newer Withings-only
+    # date cannot make stale Garmin data look like last night.
+    last_night_sql = next(s for s in seen if "max(daily_summary.date)" in s)
+    assert "coalesce" in last_night_sql
+    assert "daily_summary.source = 'garmin'" in last_night_sql
     assert result["last_night"]["data_date"] == three_days_ago.isoformat()
     assert result["last_night"]["days_old"] == 3
 
@@ -736,7 +748,7 @@ def test_readiness_today_flags_stale_garmin_data(session: FakeSession) -> None:
 def test_readiness_today_not_stale_for_today_or_yesterday(
     session: FakeSession, days_old: int
 ) -> None:
-    day = datetime.now(UTC).date() - timedelta(days=days_old)
+    day = _as_of(session) - timedelta(days=days_old)
     garmin = _garmin_summary(day, sleep_score=75)
     session.dispatch = _readiness_dispatch([garmin])
     session.scalar_dispatch = lambda stmt: garmin

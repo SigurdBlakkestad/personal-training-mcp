@@ -327,7 +327,6 @@ def _get_daily_summary(
             select(DailySummary)
             .where(DailySummary.date >= start_date)
             .where(DailySummary.date <= end_date)
-            .order_by(DailySummary.date)
         )
     )
     measurements = list(
@@ -598,18 +597,24 @@ def _readiness_today(session: Session) -> dict[str, Any]:
     horizon_dt = datetime.combine(horizon, time.min, tzinfo=UTC)
     week_start = today - timedelta(days=today.weekday())
 
-    newest_summary_date = (
-        select(func.max(DailySummary.date)).where(DailySummary.date <= today).scalar_subquery()
+    # "Last night" is Garmin's newest date (Garmin is authoritative); other
+    # sources only fill gaps on that date. Without any Garmin row, fall back
+    # to the newest date from any source.
+    last_night_anchor = func.coalesce(
+        select(func.max(DailySummary.date))
+        .where(DailySummary.source == "garmin")
+        .where(DailySummary.date <= today)
+        .scalar_subquery(),
+        select(func.max(DailySummary.date)).where(DailySummary.date <= today).scalar_subquery(),
     )
-    newest_summaries = list(
-        session.scalars(select(DailySummary).where(DailySummary.date == newest_summary_date))
+    last_night_rows = list(
+        session.scalars(select(DailySummary).where(DailySummary.date == last_night_anchor))
     )
-    last_night_by_date = _merge_daily_summaries(newest_summaries)
-    last_night_date = max(last_night_by_date) if last_night_by_date else None
-    last_night = (
-        last_night_by_date[last_night_date]
+    last_night_date = last_night_rows[0].date if last_night_rows else None
+    last_night: dict[str, Any] = (
+        _merge_daily_summaries(last_night_rows)[last_night_date]
         if last_night_date is not None
-        else _empty_daily_row(today)
+        else {}
     )
 
     latest_weight_row = session.execute(
@@ -686,13 +691,13 @@ def _readiness_today(session: Session) -> dict[str, Any]:
         "last_night": {
             "data_date": last_night_date.isoformat() if last_night_date is not None else None,
             "days_old": (today - last_night_date).days if last_night_date is not None else None,
-            "sources": last_night["sources"],
-            "sleep_score": last_night["sleep_score"],
-            "sleep_duration_hours": last_night["sleep_duration_hours"],
-            "resting_hr": last_night["resting_hr"],
-            "hrv_ms": last_night["hrv_ms"],
-            "respiration_avg": last_night["respiration_avg"],
-            "body_battery_low": last_night["body_battery_low"],
+            "sources": last_night.get("sources", []),
+            "sleep_score": last_night.get("sleep_score"),
+            "sleep_duration_hours": last_night.get("sleep_duration_hours"),
+            "resting_hr": last_night.get("resting_hr"),
+            "hrv_ms": last_night.get("hrv_ms"),
+            "respiration_avg": last_night.get("respiration_avg"),
+            "body_battery_low": last_night.get("body_battery_low"),
         },
         "garmin_readiness": {
             "date": (
