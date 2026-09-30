@@ -6,6 +6,7 @@ import pytest
 
 from training_pipeline.derived import compute
 from training_pipeline.derived.training_load import compute_trimp
+from training_pipeline.shared.local_time import local_today
 from training_pipeline.shared.models import Activity
 
 
@@ -105,11 +106,24 @@ def test_recompute_all_force_does_not_shrink_other_metrics_window(
     session = FakeSession([_activity()])
     compute.recompute_all(session, force=True)
 
-    today = datetime.now(UTC).date()
+    today = local_today()
     expected_default_since = today - timedelta(days=compute.DEFAULT_RECOMPUTE_WINDOW_DAYS)
     assert since_seen["ctl_atl_tsb"] == expected_default_since
     assert since_seen["weekly_load"] == expected_default_since
     assert since_seen["weight_trend"] == expected_default_since
+
+
+def test_recompute_all_extends_ctl_atl_tsb_through_local_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    written: list[dict[str, Any]] = []
+    monkeypatch.setattr(compute, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(compute, "_upsert_metrics", lambda session, rows: written.extend(rows))
+
+    compute.recompute_all(FakeSession([_activity(training_load=80.0)]))
+
+    ctl_dates = sorted(row["date"] for row in written if row["metric_name"] == "ctl")
+    assert ctl_dates[-1] == local_today()
 
 
 def test_backfill_training_load_skips_existing_values_by_default() -> None:

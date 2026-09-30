@@ -17,13 +17,16 @@ class DailyLoadPoint:
 def compute_ctl_atl_tsb(
     daily_loads: Iterable[tuple[date, float]],
     *,
+    end: date,
     ctl_tc: int = CTL_TIME_CONSTANT_DAYS,
     atl_tc: int = ATL_TIME_CONSTANT_DAYS,
 ) -> list[DailyLoadPoint]:
     """Compute daily CTL/ATL/TSB from a per-day training load series.
 
-    Missing days between the first and last load are treated as zero load — this is
-    the standard convention so that rest days correctly decay CTL/ATL.
+    The series runs from the first load day through ``end`` (normally the
+    athlete's local today). Days without load — gaps and the rest days after the
+    last activity — are treated as zero load, the standard convention so that
+    rest days correctly decay CTL/ATL. Loads after ``end`` are ignored.
     """
     by_date: dict[date, float] = {}
     for d, load in daily_loads:
@@ -33,7 +36,6 @@ def compute_ctl_atl_tsb(
         return []
 
     start = min(by_date)
-    end = max(by_date)
     ctl = 0.0
     atl = 0.0
     out: list[DailyLoadPoint] = []

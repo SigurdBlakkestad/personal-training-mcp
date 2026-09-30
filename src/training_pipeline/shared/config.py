@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_TIMEZONE = "Europe/Oslo"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -46,6 +48,9 @@ class Settings(BaseSettings):
     ATHLETE_FTP: int = 200
     ATHLETE_HR_REST: int = 49
     ATHLETE_HR_MAX: int = 193
+    # IANA zone that decides which calendar day / ISO week a UTC timestamp
+    # belongs to (see shared/local_time.py). Stored timestamps stay UTC.
+    ATHLETE_TZ: str = DEFAULT_TIMEZONE
 
     NOTION_TOKEN: str = ""
     NOTION_DB_ACTIVITIES_ID: str = ""
@@ -54,7 +59,7 @@ class Settings(BaseSettings):
 
     WEATHER_LATITUDE: float = 58.4658
     WEATHER_LONGITUDE: float = 8.8512
-    WEATHER_TIMEZONE: str = "Europe/Oslo"
+    WEATHER_TIMEZONE: str = DEFAULT_TIMEZONE
 
 
 def get_settings() -> Settings:

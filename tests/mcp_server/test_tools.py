@@ -7,7 +7,9 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from training_pipeline.derived.weight_trend import compute_weight_trend
 from training_pipeline.mcp_server import tools
+from training_pipeline.shared.local_time import local_today
 from training_pipeline.shared.models import (
     Activity,
     ActivityExerciseSet,
@@ -427,7 +429,7 @@ def test_get_training_load_trend_aligns_dates(session: FakeSession) -> None:
 
 
 def test_get_weekly_load_groups_by_week(session: FakeSession) -> None:
-    today = datetime.now(UTC).date()
+    today = local_today()
     week = today - timedelta(days=today.weekday())
 
     def dispatch(stmt: Any) -> Any:
@@ -458,7 +460,7 @@ def test_get_weekly_load_groups_by_week(session: FakeSession) -> None:
 
 
 def test_get_weekly_load_hours_come_from_duration_not_load(session: FakeSession) -> None:
-    today = datetime.now(UTC).date()
+    today = local_today()
     monday = today - timedelta(days=today.weekday())
     tue = datetime.combine(monday + timedelta(days=1), time(7), tzinfo=UTC)
     # A week whose Monday falls before the window start is never reported,
@@ -514,6 +516,31 @@ def test_get_weight_trend_pairs_with_moving_averages(session: FakeSession) -> No
     assert rows[0]["weight_kg"] == pytest.approx(82.0)
     assert rows[0]["weight_7d_avg"] == pytest.approx(82.1)
     assert rows[1]["weight_28d_avg"] == pytest.approx(82.4)
+
+
+def test_get_weight_trend_uses_same_reading_as_derived_average(session: FakeSession) -> None:
+    # Two weigh-ins on one Oslo day: 07:00 (82.4) and 21:00 (81.6) CEST.
+    morning = datetime(2026, 9, 29, 5, 0, tzinfo=UTC)
+    evening = datetime(2026, 9, 29, 19, 0, tzinfo=UTC)
+    measurements = [(morning, 82.4), (evening, 81.6)]
+    derived = compute_weight_trend(measurements)
+    assert len(derived) == 1
+
+    def dispatch(stmt: Any) -> Any:
+        stmt_str = str(stmt)
+        if "body_measurements" in stmt_str:
+            return measurements
+        if "weight_7d_avg" in stmt_str:
+            return [(p.date, p.weight_7d_avg) for p in derived]
+        return []
+
+    session.dispatch = dispatch
+    rows = tools._get_weight_trend(session, weeks=4)
+
+    assert len(rows) == 1
+    assert rows[0]["date"] == "2026-09-29"
+    assert rows[0]["weight_kg"] == pytest.approx(82.4)
+    assert rows[0]["weight_7d_avg"] == pytest.approx(rows[0]["weight_kg"])
 
 
 def test_get_current_plan_returns_latest(session: FakeSession) -> None:

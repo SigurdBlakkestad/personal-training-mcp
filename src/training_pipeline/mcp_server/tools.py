@@ -21,6 +21,7 @@ from training_pipeline.derived.weekly_load import (
     TRACKED_SPORTS,
     sum_by_week_and_sport,
 )
+from training_pipeline.derived.weight_trend import daily_weights
 from training_pipeline.notion_sync.client import NotionClient
 from training_pipeline.notion_sync.plan_mirror import (
     INTENSITY_OPTIONS,
@@ -29,6 +30,7 @@ from training_pipeline.notion_sync.plan_mirror import (
 )
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.db import get_session
+from training_pipeline.shared.local_time import athlete_tz, local_date, local_today
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
     Activity,
@@ -324,8 +326,8 @@ def _merge_daily_summaries(
 def _get_daily_summary(
     session: Session, start_date: date_type, end_date: date_type
 ) -> list[dict[str, Any]]:
-    start_dt = datetime.combine(start_date, time.min, tzinfo=UTC)
-    end_dt = datetime.combine(end_date, time.max, tzinfo=UTC)
+    start_dt = datetime.combine(start_date, time.min, tzinfo=athlete_tz())
+    end_dt = datetime.combine(end_date, time.max, tzinfo=athlete_tz())
 
     summaries = list(
         session.scalars(
@@ -346,7 +348,7 @@ def _get_daily_summary(
     by_date = _merge_daily_summaries(summaries)
 
     for measurement in measurements:
-        day = measurement.measured_at.date()
+        day = local_date(measurement.measured_at)
         row = by_date.setdefault(day, _empty_daily_row(day))
         if measurement.weight_kg is not None:
             row["weight_kg"] = measurement.weight_kg
@@ -386,7 +388,7 @@ def _metric_series(
 
 
 def _get_training_load_trend(session: Session, weeks: int) -> list[dict[str, Any]]:
-    today = datetime.now(UTC).date()
+    today = local_today()
     start = today - timedelta(weeks=weeks)
     ctl = dict(_metric_series(session, "ctl", start, today))
     atl = dict(_metric_series(session, "atl", start, today))
@@ -417,7 +419,7 @@ def _get_weekly_load(session: Session, weeks: int) -> list[dict[str, Any]]:
     ``weekly_load_*`` derived metrics). ``*_hours`` / ``total_hours`` are
     activity durations in hours, bucketed the same way as the load.
     """
-    today = datetime.now(UTC).date()
+    today = local_today()
     start = today - timedelta(weeks=weeks)
     load_rows = session.execute(
         select(DerivedMetric.date, DerivedMetric.metric_name, DerivedMetric.value)
@@ -432,7 +434,7 @@ def _get_weekly_load(session: Session, weeks: int) -> list[dict[str, Any]]:
             Activity.start_time,
             Activity.sport_type,
             func.coalesce(Activity.duration_seconds, 0),
-        ).where(Activity.start_time >= datetime.combine(start, time.min, tzinfo=UTC))
+        ).where(Activity.start_time >= datetime.combine(start, time.min, tzinfo=athlete_tz()))
     ).all()
     seconds = sum_by_week_and_sport(
         (start_time, sport, float(duration)) for start_time, sport, duration in activity_rows
@@ -466,9 +468,9 @@ def get_weekly_load(weeks: int = 8) -> list[dict[str, Any]]:
 
 
 def _get_weight_trend(session: Session, weeks: int) -> list[dict[str, Any]]:
-    today = datetime.now(UTC).date()
+    today = local_today()
     start = today - timedelta(weeks=weeks)
-    start_dt = datetime.combine(start, time.min, tzinfo=UTC)
+    start_dt = datetime.combine(start, time.min, tzinfo=athlete_tz())
 
     measurements = session.execute(
         select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
@@ -479,21 +481,18 @@ def _get_weight_trend(session: Session, weeks: int) -> list[dict[str, Any]]:
     avg7 = dict(_metric_series(session, "weight_7d_avg", start, today))
     avg28 = dict(_metric_series(session, "weight_28d_avg", start, today))
 
-    rows: list[dict[str, Any]] = []
-    seen_dates: set[date_type] = set()
-    for measured_at, weight in measurements:
-        day = measured_at.date()
-        if day in seen_dates:
-            continue
-        seen_dates.add(day)
-        rows.append(
-            {
-                "date": day.isoformat(),
-                "weight_kg": float(weight) if weight is not None else None,
-                "weight_7d_avg": avg7.get(day),
-                "weight_28d_avg": avg28.get(day),
-            }
-        )
+    by_day = daily_weights(
+        (measured_at, float(weight)) for measured_at, weight in measurements if weight is not None
+    )
+    rows: list[dict[str, Any]] = [
+        {
+            "date": day.isoformat(),
+            "weight_kg": weight,
+            "weight_7d_avg": avg7.get(day),
+            "weight_28d_avg": avg28.get(day),
+        }
+        for day, weight in sorted(by_day.items())
+    ]
     logger.info("mcp.get_weight_trend", weeks=weeks, result_count=len(rows))
     return rows
 
@@ -597,7 +596,7 @@ def search_sessions(filters: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _readiness_today(session: Session) -> dict[str, Any]:
-    today = datetime.now(UTC).date()
+    today = local_today()
     horizon = today - timedelta(days=21)
     horizon_dt = datetime.combine(horizon, time.min, tzinfo=UTC)
     week_start = today - timedelta(days=today.weekday())
