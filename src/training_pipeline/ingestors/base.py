@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import func, literal_column, select
+from sqlalchemy import case, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from training_pipeline.derived.training_load import ActivityInput
 from training_pipeline.shared.db import get_session
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
@@ -20,6 +21,10 @@ from training_pipeline.shared.models import (
 logger = get_logger(__name__)
 
 UpsertOutcome = Literal["inserted", "updated"]
+
+# Columns compute_training_load reads; a change to any of them invalidates the
+# stored training_load.
+LOAD_INPUT_COLUMNS = tuple(ActivityInput.__annotations__)
 
 
 @dataclass
@@ -114,6 +119,17 @@ class IngestorBase(ABC):
         update_cols: dict[str, Any] = {
             col: insert_stmt.excluded[col] for col in activity if col not in ("source", "source_id")
         }
+        # Clear a stale load when a re-sync changes its inputs, so the routine
+        # (non-force) compute backfills it from the corrected values.
+        changed_inputs = [
+            getattr(Activity, col).is_distinct_from(insert_stmt.excluded[col])
+            for col in LOAD_INPUT_COLUMNS
+            if col in activity
+        ]
+        if changed_inputs:
+            update_cols["training_load"] = case(
+                (or_(*changed_inputs), None), else_=Activity.training_load
+            )
         update_cols["updated_at"] = func.now()
         stmt: Any = insert_stmt.on_conflict_do_update(
             constraint="uq_activities_source_source_id",
