@@ -1,3 +1,4 @@
+import re
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from typing import Any
@@ -171,6 +172,70 @@ def test_upsert_activity_updated() -> None:
         },
     )
     assert outcome == "updated"
+
+
+def _compiled_training_load_update(activity: dict[str, Any]) -> str | None:
+    """The conflict update's training_load expression, or None if it isn't set."""
+    ingestor = FakeIngestor(IngestionResult())
+    session = MagicMock(spec=Session)
+    session.execute.return_value.scalar_one.return_value = False
+    ingestor.upsert_activity(session, activity)
+    stmt = session.execute.call_args.args[0]
+    compiled = str(stmt.compile(dialect=postgresql.dialect()))
+    set_clause = compiled.split("DO UPDATE SET", 1)[1]
+    match = re.search(r"training_load = (CASE .*? END)", set_clause)
+    return match.group(1) if match else None
+
+
+def test_upsert_activity_resets_training_load_when_load_inputs_change() -> None:
+    expr = _compiled_training_load_update(
+        {
+            "source": "garmin",
+            "source_id": "123",
+            "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "sport_type": "running",
+            "duration_seconds": 3600,
+            "normalized_power": None,
+            "avg_hr": 150,
+            "raw": {},
+        }
+    )
+
+    assert expr is not None
+    # Any changed input (compared against the stored row) clears the load so the
+    # routine compute refills it; identical inputs keep the stored value.
+    for col in ("sport_type", "duration_seconds", "normalized_power", "avg_hr"):
+        assert f"activities.{col} IS DISTINCT FROM excluded.{col}" in expr
+    assert expr.endswith("THEN NULL ELSE activities.training_load END")
+
+
+def test_upsert_activity_only_compares_load_inputs_it_writes() -> None:
+    expr = _compiled_training_load_update(
+        {
+            "source": "garmin",
+            "source_id": "123",
+            "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "avg_hr": 150,
+            "raw": {},
+        }
+    )
+
+    assert expr == (
+        "CASE WHEN (activities.avg_hr IS DISTINCT FROM excluded.avg_hr) "
+        "THEN NULL ELSE activities.training_load END"
+    )
+
+
+def test_upsert_activity_leaves_training_load_alone_without_load_inputs() -> None:
+    expr = _compiled_training_load_update(
+        {
+            "source": "garmin",
+            "source_id": "123",
+            "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "raw": {},
+        }
+    )
+    assert expr is None
 
 
 def test_upsert_body_measurement_inserts_when_no_match() -> None:
