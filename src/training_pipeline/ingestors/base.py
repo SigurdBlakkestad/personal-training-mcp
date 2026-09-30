@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import case, func, literal_column, or_, select
+from sqlalchemy import case, func, literal_column, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -141,26 +141,24 @@ class IngestorBase(ABC):
     def upsert_body_measurement(
         self, session: Session, measurement: dict[str, Any]
     ) -> UpsertOutcome:
-        # TODO: revisit dedup. body_measurements has no perfect natural key; matching on
-        # (source, measured_at, weight_kg) holds for Withings but may need rework once
-        # Garmin lands.
-        weight = measurement.get("weight_kg")
-        weight_cond = (
-            BodyMeasurement.weight_kg.is_(None)
-            if weight is None
-            else BodyMeasurement.weight_kg == weight
-        )
-        existing = session.scalar(
-            select(BodyMeasurement).where(
-                BodyMeasurement.source == measurement["source"],
-                BodyMeasurement.measured_at == measurement["measured_at"],
-                weight_cond,
-            )
-        )
-        if existing is not None:
-            return "updated"
-        session.add(BodyMeasurement(**measurement))
-        return "inserted"
+        """Insert a measurement, or overwrite the stored one with the same source_id.
+
+        A re-fetched group replaces the stored row wholesale, so a corrected
+        weight or body-fat value lands on the existing row instead of adding one.
+        """
+        insert_stmt = pg_insert(BodyMeasurement).values(**measurement)
+        update_cols: dict[str, Any] = {
+            col: insert_stmt.excluded[col]
+            for col in measurement
+            if col not in ("source", "source_id")
+        }
+        update_cols["ingested_at"] = func.now()
+        stmt: Any = insert_stmt.on_conflict_do_update(
+            constraint="uq_body_measurements_source_source_id",
+            set_=update_cols,
+        ).returning(literal_column("(xmax = 0)").label("inserted"))
+        inserted = bool(session.execute(stmt).scalar_one())
+        return "inserted" if inserted else "updated"
 
     def upsert_daily_summary(self, session: Session, summary: dict[str, Any]) -> UpsertOutcome:
         """Insert a day's summary, or merge it into the stored one.

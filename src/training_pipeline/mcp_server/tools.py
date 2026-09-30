@@ -625,7 +625,7 @@ def _readiness_today(session: Session) -> dict[str, Any]:
         select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
         .where(BodyMeasurement.weight_kg.is_not(None))
         .where(BodyMeasurement.measured_at <= datetime.combine(today, time.max, tzinfo=UTC))
-        .order_by(desc(BodyMeasurement.measured_at))
+        .order_by(desc(BodyMeasurement.measured_at), desc(BodyMeasurement.ingested_at))
         .limit(1)
     ).first()
     latest_weight = latest_weight_row[1] if latest_weight_row is not None else None

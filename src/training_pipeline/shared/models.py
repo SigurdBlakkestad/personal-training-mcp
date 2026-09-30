@@ -172,6 +172,8 @@ class BodyMeasurement(Base):
         server_default=text("gen_random_uuid()"),
     )
     source: Mapped[str] = mapped_column(Text, nullable=False)
+    # Withings measure-group id (grpid). NULL only on legacy rows whose payload lacked one.
+    source_id: Mapped[str | None] = mapped_column(Text)
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     weight_kg: Mapped[float | None] = mapped_column(REAL)
     body_fat_pct: Mapped[float | None] = mapped_column(REAL)
@@ -183,6 +185,10 @@ class BodyMeasurement(Base):
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_body_measurements_source_source_id"),
     )
 
 
