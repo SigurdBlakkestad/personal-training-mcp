@@ -187,3 +187,26 @@ async def test_id_allowlist_pins_login(
 async def test_id_allowlist_does_not_bypass_login_check(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _real_provider(monkeypatch, "123", _github_access("someone-else", "123"))
     assert await provider.verify_token("t") is None
+
+
+def test_build_auth_strips_surrounding_whitespace() -> None:
+    s = _settings(
+        **{
+            **_FULL,
+            "MCP_GITHUB_CLIENT_ID": " id\n",
+            "MCP_GITHUB_CLIENT_SECRET": " secret\n",
+            "MCP_PUBLIC_URL": " https://example.com/ ",
+        }
+    )
+    provider = build_auth(s)  # type: ignore[arg-type]
+    assert provider is not None
+    assert provider._upstream_client_id == "id"
+    assert provider._upstream_client_secret.get_secret_value() == "secret"
+    assert str(provider.base_url) == "https://example.com/"
+
+
+def test_build_auth_rejects_non_ascii_digit_ids() -> None:
+    # "١٢٣" is Arabic-Indic 123: str.isdecimal() accepts it, GitHub never emits it.
+    s = _settings(**_FULL, MCP_ALLOWED_GITHUB_IDS="١٢٣")
+    with pytest.raises(RuntimeError, match="not numeric"):
+        build_auth(s)  # type: ignore[arg-type]

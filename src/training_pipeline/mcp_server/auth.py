@@ -106,19 +106,19 @@ def build_auth(settings: Settings) -> RestrictedGitHubProvider | None:
         )
     if ids_given and not allowed_ids:
         raise RuntimeError("MCP_ALLOWED_GITHUB_IDS is set but lists no ids.")
-    non_numeric = sorted(i for i in allowed_ids if not i.isdecimal())
+    non_numeric = sorted(i for i in allowed_ids if not (i.isascii() and i.isdecimal()))
     if non_numeric:
         raise RuntimeError(
             "MCP_ALLOWED_GITHUB_IDS must list numeric GitHub user ids; "
             f"not numeric: {', '.join(non_numeric)}"
         )
 
-    base_url = settings.MCP_PUBLIC_URL.rstrip("/")
+    base_url = settings.MCP_PUBLIC_URL.strip().rstrip("/")
     return RestrictedGitHubProvider(
         allowed_logins=allowed,
         allowed_ids=allowed_ids,
-        client_id=settings.MCP_GITHUB_CLIENT_ID,
-        client_secret=settings.MCP_GITHUB_CLIENT_SECRET,
+        client_id=settings.MCP_GITHUB_CLIENT_ID.strip(),
+        client_secret=settings.MCP_GITHUB_CLIENT_SECRET.strip(),
         # base_url is the public origin: FastMCP serves the OAuth + discovery
         # routes (/.well-known/*, /authorize, /token, /register, /auth/callback)
         # at the root, and the MCP endpoint itself at /mcp. The app must be
