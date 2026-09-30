@@ -691,7 +691,9 @@ _DAILY_METHODS = (
 )
 
 
-def _run_daily_sync(client: MagicMock) -> tuple[GarminIngestor, list[dict[str, Any]]]:
+def _run_daily_sync(
+    client: MagicMock, session: MagicMock | None = None
+) -> tuple[GarminIngestor, list[dict[str, Any]]]:
     """Run a real ``_sync`` over two days with activities stubbed out."""
     fixed_now = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
     ingestor = GarminIngestor(client=client, now=lambda: fixed_now)
@@ -703,7 +705,7 @@ def _run_daily_sync(client: MagicMock) -> tuple[GarminIngestor, list[dict[str, A
         return "inserted"
 
     ingestor.upsert_daily_summary = capture  # type: ignore[method-assign]
-    ingestor._sync(_make_session(), datetime(2026, 4, 1, 6, 0, tzinfo=UTC))
+    ingestor._sync(session or _make_session(), datetime(2026, 4, 1, 6, 0, tzinfo=UTC))
     return ingestor, captured
 
 
@@ -714,8 +716,13 @@ def test_sync_fails_when_every_daily_endpoint_fails_every_day() -> None:
     for method in _DAILY_METHODS:
         getattr(client, method).side_effect = RuntimeError("API changed")
 
+    session = _make_session()
+
     with pytest.raises(RuntimeError, match="Every Garmin daily endpoint failed on all 2 day"):
-        _run_daily_sync(client)
+        _run_daily_sync(client, session)
+
+    # Activities stored earlier in the run are committed, not rolled back.
+    session.commit.assert_called_once()
 
 
 def test_sync_fails_when_an_endpoint_rejects_the_token() -> None:
@@ -728,9 +735,23 @@ def test_sync_fails_when_an_endpoint_rejects_the_token() -> None:
         _run_daily_sync(client)
 
 
-def test_sync_fails_when_an_endpoint_returns_403() -> None:
-    forbidden = GarminConnectConnectionError("API client error (403): Forbidden")
-    forbidden.response = MagicMock(status_code=403)
+def _forbidden_with_response() -> GarminConnectConnectionError:
+    exc = GarminConnectConnectionError("API client error (403): Forbidden")
+    exc.response = MagicMock(status_code=403)
+    return exc
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        # What garminconnect raises for an endpoint 403: status in the message only.
+        GarminConnectConnectionError("API call client error (403): API Error 403"),
+        _forbidden_with_response(),
+    ],
+)
+def test_sync_fails_when_an_endpoint_returns_403(
+    forbidden: GarminConnectConnectionError,
+) -> None:
     client = _daily_client()
     client.get_sleep_data.side_effect = forbidden
 

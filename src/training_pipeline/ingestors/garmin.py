@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
 import tarfile
 import tempfile
 from collections import Counter
@@ -42,6 +43,9 @@ GARMIN_OVERLAP_MARGIN_HOURS = 72
 # HTTP statuses meaning Garmin rejected the token. These never mean "no data
 # for this day" and must fail the run like a dead login would.
 GARMIN_AUTH_FAILURE_STATUSES: frozenset[int] = frozenset({401, 403})
+# garminconnect reports an endpoint's HTTP status only inside the message,
+# e.g. "API call client error (403): API Error 403".
+_API_ERROR_STATUS_RE = re.compile(r"API Error (\d{3})")
 STRAVA_DEDUPE_WINDOW_SECONDS = 60
 
 # Sports whose laps are worth storing, on top of the hasIntensityIntervals
@@ -453,11 +457,15 @@ def _is_auth_failure(exc: Exception) -> bool:
     """True when Garmin rejected the token rather than lacking data.
 
     garminconnect raises ``GarminConnectAuthenticationError`` for 401s but
-    surfaces a 403 as a generic connection error carrying the HTTP response.
+    surfaces a 403 as a generic connection error, with the status on the
+    attached response when there is one and otherwise only in the message.
     """
     if isinstance(exc, GarminConnectAuthenticationError):
         return True
     status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int):
+        match = _API_ERROR_STATUS_RE.search(str(exc))
+        status = int(match.group(1)) if match else None
     return status in GARMIN_AUTH_FAILURE_STATUSES
 
 
@@ -864,6 +872,9 @@ class GarminIngestor(IngestorBase):
         # A quiet day still has a user summary; every endpoint failing on
         # every day means the session or the API is broken.
         if all(failures[endpoint] == days for endpoint in fetchers):
+            # Keep the activities stored earlier in this run: the error is
+            # there to fail the run, not to discard what did sync.
+            session.commit()
             raise RuntimeError(
                 f"Every Garmin daily endpoint failed on all {days} day(s) since "
                 f"{since.date().isoformat()}; see garmin.endpoint_failed warnings."
