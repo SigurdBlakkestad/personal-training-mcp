@@ -115,10 +115,12 @@ def readiness_today() -> dict[str, Any]:
     """Composite snapshot for today's training decision.
 
     Returns last-night sleep/HRV/RHR/respiration, Garmin's own training
-    readiness score and level, current VO2 max (running + cycling), week-to-
-    date intensity minutes, weight delta vs 7d avg, current TSB, and recent
-    RPE trend. Prefer ``garmin_readiness.score`` when present; fall back to
-    HRV/RHR/sleep heuristics otherwise.
+    readiness score and level, latest VO2 max (running + cycling, each with
+    the date Garmin last estimated it), week-to-date intensity minutes, the
+    latest weigh-in vs the average of the 7 days before it, current TSB, and
+    RPE from the last 21 days (latest log per session). Prefer
+    ``garmin_readiness.score`` when present; fall back to HRV/RHR/sleep
+    heuristics otherwise.
 
     ``last_night`` merges every source for the newest date, with Garmin
     authoritative and Withings only filling fields Garmin lacks;

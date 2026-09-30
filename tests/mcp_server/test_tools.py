@@ -615,20 +615,25 @@ def test_readiness_today_composes_fields(session: FakeSession) -> None:
         raw={},
         ingested_at=datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
     )
-    weight_row = (datetime(2026, 5, 13, 7, 0, tzinfo=UTC), 82.0)
+    weigh_in = datetime(2026, 5, 13, 5, 0, tzinfo=UTC)
+    weight_rows = [
+        (datetime(2026, 5, 11, 5, 0, tzinfo=UTC), 82.6),
+        (datetime(2026, 5, 12, 5, 0, tzinfo=UTC), 82.2),
+        (weigh_in, 82.0),
+    ]
 
     def dispatch(stmt: Any) -> Any:
         stmt_str = str(stmt)
         if "max(daily_summary.date)" in stmt_str:
             return [summary]
+        if "max(body_measurements.measured_at)" in stmt_str:
+            return [(weigh_in,)]
         if "body_measurements" in stmt_str:
-            return [weight_row]
-        if "weight_7d_avg" in stmt_str:
-            return [(82.4,)]
+            return weight_rows
         if "metric_name = " in stmt_str and "tsb" in stmt_str:
             return [(-12.5, date(2026, 5, 13))]
         if "manual_logs" in stmt_str:
-            return [(7,), (8,), (6,)]
+            return [(uuid4(), 7), (uuid4(), 8), (None, 6)]
         return []
 
     session.dispatch = dispatch
@@ -640,12 +645,152 @@ def test_readiness_today_composes_fields(session: FakeSession) -> None:
     assert result["last_night"]["sleep_duration_hours"] == 7.0
     assert result["last_night"]["hrv_ms"] == 65.0
     assert result["last_night"]["body_battery_low"] == 18
+    assert result["latest_weight"]["date"] == "2026-05-13"
     assert result["latest_weight"]["weight_kg"] == pytest.approx(82.0)
     assert result["latest_weight"]["weight_7d_avg"] == pytest.approx(82.4)
     assert result["latest_weight"]["delta_vs_7d"] == pytest.approx(-0.4)
     assert result["training_load"]["tsb"] == pytest.approx(-12.5)
     assert result["recent_rpe"]["count"] == 3
     assert result["recent_rpe"]["avg"] == pytest.approx(7.0)
+
+
+def _weight_dispatch(rows: list[tuple[datetime, float]], seen: list[str] | None = None) -> Any:
+    def dispatch(stmt: Any) -> Any:
+        stmt_str = str(stmt)
+        if seen is not None:
+            seen.append(stmt_str)
+        if "max(body_measurements.measured_at)" in stmt_str:
+            return [(max(r[0] for r in rows),)] if rows else [(None,)]
+        if "body_measurements" in stmt_str:
+            return rows
+        return []
+
+    return dispatch
+
+
+def test_readiness_weight_delta_excludes_latest_day_for_weekly_weigher(
+    session: FakeSession,
+) -> None:
+    # Weekly weigher: 84.0 a week ago, 82.0 today (both 07:00 Oslo, CEST).
+    rows = [
+        (datetime(2026, 9, 22, 5, 0, tzinfo=UTC), 84.0),
+        (datetime(2026, 9, 29, 5, 0, tzinfo=UTC), 82.0),
+    ]
+    session.dispatch = _weight_dispatch(rows)
+
+    weight = tools._readiness_today(session)["latest_weight"]
+
+    assert weight["date"] == "2026-09-29"
+    assert weight["weight_kg"] == pytest.approx(82.0)
+    assert weight["weight_7d_avg"] == pytest.approx(84.0)
+    assert weight["weight_7d_avg_date"] == "2026-09-28"
+    assert weight["delta_vs_7d"] == pytest.approx(-2.0)
+
+
+def test_readiness_weight_uses_first_weigh_in_of_local_day(session: FakeSession) -> None:
+    # 00:30 Oslo on 29 Sep is still 28 Sep in UTC; the evening reading drifts.
+    rows = [
+        (datetime(2026, 9, 28, 5, 0, tzinfo=UTC), 83.0),
+        (datetime(2026, 9, 28, 22, 30, tzinfo=UTC), 82.0),
+        (datetime(2026, 9, 29, 19, 0, tzinfo=UTC), 83.5),
+    ]
+    seen: list[str] = []
+    session.dispatch = _weight_dispatch(rows, seen)
+
+    weight = tools._readiness_today(session)["latest_weight"]
+
+    assert weight["date"] == "2026-09-29"
+    assert weight["weight_kg"] == pytest.approx(82.0)
+    assert weight["weight_7d_avg"] == pytest.approx(83.0)
+    assert weight["delta_vs_7d"] == pytest.approx(-1.0)
+    window_sql = next(s for s in seen if "body_measurements" in s and "max(" not in s)
+    # Window bounds are Oslo midnights, not UTC ones.
+    assert "2026-09-22 00:00:00+02:00" in window_sql
+
+
+def test_readiness_weight_none_without_measurements(session: FakeSession) -> None:
+    session.dispatch = _weight_dispatch([])
+
+    weight = tools._readiness_today(session)["latest_weight"]
+
+    assert weight == {
+        "date": None,
+        "weight_kg": None,
+        "weight_7d_avg": None,
+        "weight_7d_avg_date": None,
+        "delta_vs_7d": None,
+    }
+
+
+def test_readiness_weight_avg_none_without_preceding_weigh_ins(session: FakeSession) -> None:
+    rows = [(datetime(2026, 9, 29, 5, 0, tzinfo=UTC), 82.0)]
+    session.dispatch = _weight_dispatch(rows)
+
+    weight = tools._readiness_today(session)["latest_weight"]
+
+    assert weight["weight_kg"] == pytest.approx(82.0)
+    assert weight["weight_7d_avg"] is None
+    assert weight["weight_7d_avg_date"] is None
+    assert weight["delta_vs_7d"] is None
+
+
+def test_readiness_rpe_counts_every_session_in_window(session: FakeSession) -> None:
+    logs = [(uuid4(), 5 + i % 4) for i in range(12)]
+    seen: list[str] = []
+
+    def dispatch(stmt: Any) -> Any:
+        stmt_str = str(stmt)
+        seen.append(stmt_str)
+        return logs if "manual_logs" in stmt_str else []
+
+    session.dispatch = dispatch
+
+    rpe = tools._readiness_today(session)["recent_rpe"]
+
+    assert rpe["window_days"] == 21
+    assert rpe["count"] == 12
+    rpe_sql = next(s for s in seen if "manual_logs" in s)
+    assert "LIMIT" not in rpe_sql
+    # The 21-day horizon starts at local (Oslo) midnight.
+    assert "00:00:00+02:00" in rpe_sql or "00:00:00+01:00" in rpe_sql
+
+
+def test_readiness_rpe_counts_relogged_session_once(session: FakeSession) -> None:
+    relogged = uuid4()
+    # Newest first, as the query orders them: the correction wins.
+    logs = [(relogged, 9), (uuid4(), 6), (relogged, 5), (None, 7), (None, 8)]
+    session.dispatch = lambda stmt: logs if "manual_logs" in str(stmt) else []
+
+    rpe = tools._readiness_today(session)["recent_rpe"]
+
+    assert rpe["values"] == [9, 6, 7, 8]
+    assert rpe["count"] == 4
+
+
+def test_readiness_vo2_max_falls_back_to_newest_non_null(session: FakeSession) -> None:
+    today = _as_of(session)
+    two_days_ago = today - timedelta(days=2)
+    seen: list[str] = []
+
+    def dispatch(stmt: Any) -> Any:
+        stmt_str = str(stmt)
+        seen.append(stmt_str)
+        if "daily_summary.vo2_max_running IS NOT NULL" in stmt_str:
+            return [(two_days_ago, 52.0)]
+        return []
+
+    session.dispatch = dispatch
+    # Today's Garmin row has no VO2 estimate.
+    session.scalar_dispatch = lambda stmt: _garmin_summary(today)
+
+    fitness = tools._readiness_today(session)["fitness"]
+
+    assert fitness["vo2_max_running"] == pytest.approx(52.0)
+    assert fitness["vo2_max_running_date"] == two_days_ago.isoformat()
+    assert fitness["vo2_max_cycling"] is None
+    assert fitness["vo2_max_cycling_date"] is None
+    vo2_sql = next(s for s in seen if "vo2_max_running IS NOT NULL" in s)
+    assert "daily_summary.source = 'garmin'" in vo2_sql
 
 
 def _readiness_dispatch(

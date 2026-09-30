@@ -14,7 +14,7 @@ from uuid import UUID
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from training_pipeline.derived.weekly_load import (
     TOTAL_KEY,
@@ -47,6 +47,8 @@ from training_pipeline.shared.models import (
 logger = get_logger(__name__)
 
 ACTIVITY_RESULT_CAP = 100
+RPE_WINDOW_DAYS = 21
+WEIGHT_AVG_DAYS = 7
 ATHLETE_CONTEXT_FIELDS = (
     "ftp_watts",
     "max_hr",
@@ -595,10 +597,75 @@ def search_sessions(filters: dict[str, Any]) -> list[dict[str, Any]]:
         return _search_sessions(session, filters)
 
 
+def _weight_vs_preceding_week(session: Session, today: date_type) -> dict[str, Any]:
+    """Latest weigh-in against the average of the 7 local days before it.
+
+    Both sides use the first reading of each local day (``daily_weights``),
+    matching the derived averages. The average excludes the latest day, so a
+    weekly weigher's drop shows up instead of being averaged away.
+    """
+    tz = athlete_tz()
+    latest_at = session.execute(
+        select(func.max(BodyMeasurement.measured_at))
+        .where(BodyMeasurement.weight_kg.is_not(None))
+        .where(BodyMeasurement.measured_at <= datetime.combine(today, time.max, tzinfo=tz))
+    ).first()
+    if latest_at is None or latest_at[0] is None:
+        return {
+            "date": None,
+            "weight_kg": None,
+            "weight_7d_avg": None,
+            "weight_7d_avg_date": None,
+            "delta_vs_7d": None,
+        }
+    latest_day = local_date(latest_at[0])
+    avg_start = latest_day - timedelta(days=WEIGHT_AVG_DAYS)
+    avg_end = latest_day - timedelta(days=1)
+
+    rows = session.execute(
+        select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
+        .where(BodyMeasurement.weight_kg.is_not(None))
+        .where(BodyMeasurement.measured_at >= datetime.combine(avg_start, time.min, tzinfo=tz))
+        .where(BodyMeasurement.measured_at <= datetime.combine(latest_day, time.max, tzinfo=tz))
+    ).all()
+    by_day = daily_weights(
+        (measured_at, float(weight)) for measured_at, weight in rows if weight is not None
+    )
+    latest_weight = by_day.get(latest_day)
+    preceding = [w for day, w in by_day.items() if avg_start <= day <= avg_end]
+    avg = round(sum(preceding) / len(preceding), 3) if preceding else None
+    return {
+        "date": latest_day.isoformat(),
+        "weight_kg": latest_weight,
+        "weight_7d_avg": avg,
+        "weight_7d_avg_date": avg_end.isoformat() if avg is not None else None,
+        "delta_vs_7d": (
+            round(latest_weight - avg, 3) if latest_weight is not None and avg is not None else None
+        ),
+    }
+
+
+def _latest_garmin_value(
+    session: Session, column: InstrumentedAttribute[float | None], today: date_type
+) -> tuple[float | None, str | None]:
+    """Newest non-null value of a Garmin daily_summary column, with its date."""
+    row = session.execute(
+        select(DailySummary.date, column)
+        .where(DailySummary.source == "garmin")
+        .where(column.is_not(None))
+        .where(DailySummary.date <= today)
+        .order_by(desc(DailySummary.date))
+        .limit(1)
+    ).first()
+    if row is None:
+        return None, None
+    return row[1], row[0].isoformat()
+
+
 def _readiness_today(session: Session) -> dict[str, Any]:
     today = local_today()
-    horizon = today - timedelta(days=21)
-    horizon_dt = datetime.combine(horizon, time.min, tzinfo=UTC)
+    horizon = today - timedelta(days=RPE_WINDOW_DAYS)
+    horizon_dt = datetime.combine(horizon, time.min, tzinfo=athlete_tz())
     week_start = today - timedelta(days=today.weekday())
 
     # "Last night" is Garmin's newest date (Garmin is authoritative); other
@@ -621,30 +688,7 @@ def _readiness_today(session: Session) -> dict[str, Any]:
         else {}
     )
 
-    latest_weight_row = session.execute(
-        select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
-        .where(BodyMeasurement.weight_kg.is_not(None))
-        .where(BodyMeasurement.measured_at <= datetime.combine(today, time.max, tzinfo=UTC))
-        .order_by(desc(BodyMeasurement.measured_at))
-        .limit(1)
-    ).first()
-    latest_weight = latest_weight_row[1] if latest_weight_row is not None else None
-    latest_weight_date = (
-        latest_weight_row[0].date().isoformat() if latest_weight_row is not None else None
-    )
-
-    weight_7d_avg_row = session.execute(
-        select(DerivedMetric.value)
-        .where(DerivedMetric.metric_name == "weight_7d_avg")
-        .order_by(desc(DerivedMetric.date))
-        .limit(1)
-    ).first()
-    weight_7d_avg = float(weight_7d_avg_row[0]) if weight_7d_avg_row is not None else None
-    weight_delta_7d = (
-        round(latest_weight - weight_7d_avg, 3)
-        if latest_weight is not None and weight_7d_avg is not None
-        else None
-    )
+    weight = _weight_vs_preceding_week(session, today)
 
     tsb_row = session.execute(
         select(DerivedMetric.value, DerivedMetric.date)
@@ -655,14 +699,22 @@ def _readiness_today(session: Session) -> dict[str, Any]:
     current_tsb = float(tsb_row[0]) if tsb_row is not None else None
     current_tsb_date = tsb_row[1].isoformat() if tsb_row is not None else None
 
-    recent_rpe = session.execute(
-        select(ManualLog.rpe)
-        .where(ManualLog.rpe.is_not(None))
+    # log_session always inserts, so a corrected log is a newer row for the
+    # same activity: only the latest one per activity counts.
+    rpe_logs = session.execute(
+        select(ManualLog.activity_id, ManualLog.rpe)
         .where(ManualLog.logged_at >= horizon_dt)
         .order_by(desc(ManualLog.logged_at))
-        .limit(7)
     ).all()
-    rpe_values = [int(r[0]) for r in recent_rpe if r[0] is not None]
+    seen_activities: set[UUID] = set()
+    rpe_values: list[int] = []
+    for activity_id, rpe in rpe_logs:
+        if activity_id is not None:
+            if activity_id in seen_activities:
+                continue
+            seen_activities.add(activity_id)
+        if rpe is not None:
+            rpe_values.append(int(rpe))
     rpe_avg = round(sum(rpe_values) / len(rpe_values), 2) if rpe_values else None
 
     latest_garmin_summary = session.scalar(
@@ -688,6 +740,13 @@ def _readiness_today(session: Session) -> dict[str, Any]:
     ).all()
     moderate_values = [int(r[0]) for r in week_intensity if r[0] is not None]
     vigorous_values = [int(r[1]) for r in week_intensity if r[1] is not None]
+
+    vo2_running_value, vo2_running_date = _latest_garmin_value(
+        session, DailySummary.vo2_max_running, today
+    )
+    vo2_cycling_value, vo2_cycling_date = _latest_garmin_value(
+        session, DailySummary.vo2_max_cycling, today
+    )
 
     payload = {
         "as_of": today.isoformat(),
@@ -721,30 +780,25 @@ def _readiness_today(session: Session) -> dict[str, Any]:
             ),
         },
         "fitness": {
-            "vo2_max_running": (
-                latest_garmin_summary.vo2_max_running if latest_garmin_summary is not None else None
-            ),
-            "vo2_max_cycling": (
-                latest_garmin_summary.vo2_max_cycling if latest_garmin_summary is not None else None
-            ),
+            # Garmin only reports VO2 max on days with a new estimate, so
+            # each field is its newest non-null value, dated.
+            "vo2_max_running": vo2_running_value,
+            "vo2_max_running_date": vo2_running_date,
+            "vo2_max_cycling": vo2_cycling_value,
+            "vo2_max_cycling_date": vo2_cycling_date,
             "intensity_minutes_week_to_date": {
                 "week_start": week_start.isoformat(),
                 "moderate": sum(moderate_values) if moderate_values else None,
                 "vigorous": sum(vigorous_values) if vigorous_values else None,
             },
         },
-        "latest_weight": {
-            "date": latest_weight_date,
-            "weight_kg": latest_weight,
-            "weight_7d_avg": weight_7d_avg,
-            "delta_vs_7d": weight_delta_7d,
-        },
+        "latest_weight": weight,
         "training_load": {
             "tsb": current_tsb,
             "as_of": current_tsb_date,
         },
         "recent_rpe": {
-            "window_days": 21,
+            "window_days": RPE_WINDOW_DAYS,
             "count": len(rpe_values),
             "values": rpe_values,
             "avg": rpe_avg,
