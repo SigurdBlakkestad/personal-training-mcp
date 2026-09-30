@@ -247,6 +247,80 @@ def get_activity_by_id(activity_id: str) -> dict[str, Any] | None:
         return _get_activity_by_id(session, activity_id)
 
 
+# Fields copied verbatim from ``daily_summary`` rows into the merged per-day row.
+_DAILY_SUMMARY_FIELDS = (
+    "sleep_score",
+    "resting_hr",
+    "hrv_ms",
+    "stress_avg",
+    "stress_max",
+    "body_battery_high",
+    "body_battery_low",
+    "steps",
+    "active_calories",
+    "training_readiness_score",
+    "training_readiness_level",
+    "vo2_max_running",
+    "vo2_max_cycling",
+    "intensity_minutes_moderate",
+    "intensity_minutes_vigorous",
+    "respiration_avg",
+)
+
+
+def _empty_daily_row(day: date_type) -> dict[str, Any]:
+    return {
+        "date": day.isoformat(),
+        "sources": [],
+        "sleep_score": None,
+        "sleep_duration_hours": None,
+        "resting_hr": None,
+        "hrv_ms": None,
+        "stress_avg": None,
+        "stress_max": None,
+        "body_battery_high": None,
+        "body_battery_low": None,
+        "steps": None,
+        "active_calories": None,
+        "training_readiness_score": None,
+        "training_readiness_level": None,
+        "vo2_max_running": None,
+        "vo2_max_cycling": None,
+        "intensity_minutes_moderate": None,
+        "intensity_minutes_vigorous": None,
+        "respiration_avg": None,
+        "weight_kg": None,
+        "body_fat_pct": None,
+        "muscle_mass_kg": None,
+    }
+
+
+def _source_priority(summary: DailySummary) -> tuple[int, str]:
+    """Garmin first, then any other source alphabetically."""
+    return (0 if summary.source == "garmin" else 1, summary.source)
+
+
+def _merge_daily_summaries(
+    summaries: list[DailySummary],
+) -> dict[date_type, dict[str, Any]]:
+    """Merge per-source ``daily_summary`` rows into one row per date.
+
+    The Garmin row is authoritative: other sources (Withings) only fill
+    fields Garmin left empty for that date. Deterministic regardless of the
+    order the rows arrive in.
+    """
+    by_date: dict[date_type, dict[str, Any]] = {}
+    for summary in sorted(summaries, key=lambda s: (s.date, _source_priority(s))):
+        row = by_date.setdefault(summary.date, _empty_daily_row(summary.date))
+        row["sources"].append(summary.source)
+        if row["sleep_duration_hours"] is None and summary.sleep_duration_seconds is not None:
+            row["sleep_duration_hours"] = round(summary.sleep_duration_seconds / 3600.0, 2)
+        for field in _DAILY_SUMMARY_FIELDS:
+            if row[field] is None:
+                row[field] = getattr(summary, field)
+    return by_date
+
+
 def _get_daily_summary(
     session: Session, start_date: date_type, end_date: date_type
 ) -> list[dict[str, Any]]:
@@ -258,7 +332,6 @@ def _get_daily_summary(
             select(DailySummary)
             .where(DailySummary.date >= start_date)
             .where(DailySummary.date <= end_date)
-            .order_by(DailySummary.date)
         )
     )
     measurements = list(
@@ -270,75 +343,11 @@ def _get_daily_summary(
         )
     )
 
-    by_date: dict[date_type, dict[str, Any]] = {}
-
-    def _empty(day: date_type) -> dict[str, Any]:
-        return {
-            "date": day.isoformat(),
-            "sources": [],
-            "sleep_score": None,
-            "sleep_duration_hours": None,
-            "resting_hr": None,
-            "hrv_ms": None,
-            "stress_avg": None,
-            "stress_max": None,
-            "body_battery_high": None,
-            "body_battery_low": None,
-            "steps": None,
-            "active_calories": None,
-            "training_readiness_score": None,
-            "training_readiness_level": None,
-            "vo2_max_running": None,
-            "vo2_max_cycling": None,
-            "intensity_minutes_moderate": None,
-            "intensity_minutes_vigorous": None,
-            "respiration_avg": None,
-            "weight_kg": None,
-            "body_fat_pct": None,
-            "muscle_mass_kg": None,
-        }
-
-    for summary in summaries:
-        row = by_date.setdefault(summary.date, _empty(summary.date))
-        row["sources"].append(summary.source)
-        if summary.sleep_score is not None:
-            row["sleep_score"] = summary.sleep_score
-        if summary.sleep_duration_seconds is not None:
-            row["sleep_duration_hours"] = round(summary.sleep_duration_seconds / 3600.0, 2)
-        if summary.resting_hr is not None:
-            row["resting_hr"] = summary.resting_hr
-        if summary.hrv_ms is not None:
-            row["hrv_ms"] = summary.hrv_ms
-        if summary.stress_avg is not None:
-            row["stress_avg"] = summary.stress_avg
-        if summary.stress_max is not None:
-            row["stress_max"] = summary.stress_max
-        if summary.body_battery_high is not None:
-            row["body_battery_high"] = summary.body_battery_high
-        if summary.body_battery_low is not None:
-            row["body_battery_low"] = summary.body_battery_low
-        if summary.steps is not None:
-            row["steps"] = summary.steps
-        if summary.active_calories is not None:
-            row["active_calories"] = summary.active_calories
-        if summary.training_readiness_score is not None:
-            row["training_readiness_score"] = summary.training_readiness_score
-        if summary.training_readiness_level is not None:
-            row["training_readiness_level"] = summary.training_readiness_level
-        if summary.vo2_max_running is not None:
-            row["vo2_max_running"] = summary.vo2_max_running
-        if summary.vo2_max_cycling is not None:
-            row["vo2_max_cycling"] = summary.vo2_max_cycling
-        if summary.intensity_minutes_moderate is not None:
-            row["intensity_minutes_moderate"] = summary.intensity_minutes_moderate
-        if summary.intensity_minutes_vigorous is not None:
-            row["intensity_minutes_vigorous"] = summary.intensity_minutes_vigorous
-        if summary.respiration_avg is not None:
-            row["respiration_avg"] = summary.respiration_avg
+    by_date = _merge_daily_summaries(summaries)
 
     for measurement in measurements:
         day = measurement.measured_at.date()
-        row = by_date.setdefault(day, _empty(day))
+        row = by_date.setdefault(day, _empty_daily_row(day))
         if measurement.weight_kg is not None:
             row["weight_kg"] = measurement.weight_kg
         if measurement.body_fat_pct is not None:
@@ -589,15 +598,28 @@ def search_sessions(filters: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _readiness_today(session: Session) -> dict[str, Any]:
     today = datetime.now(UTC).date()
-    yesterday = today - timedelta(days=1)
     horizon = today - timedelta(days=21)
     horizon_dt = datetime.combine(horizon, time.min, tzinfo=UTC)
+    week_start = today - timedelta(days=today.weekday())
 
-    latest_summary = session.scalar(
-        select(DailySummary)
+    # "Last night" is Garmin's newest date (Garmin is authoritative); other
+    # sources only fill gaps on that date. Without any Garmin row, fall back
+    # to the newest date from any source.
+    last_night_anchor = func.coalesce(
+        select(func.max(DailySummary.date))
+        .where(DailySummary.source == "garmin")
         .where(DailySummary.date <= today)
-        .order_by(desc(DailySummary.date))
-        .limit(1)
+        .scalar_subquery(),
+        select(func.max(DailySummary.date)).where(DailySummary.date <= today).scalar_subquery(),
+    )
+    last_night_rows = list(
+        session.scalars(select(DailySummary).where(DailySummary.date == last_night_anchor))
+    )
+    last_night_date = last_night_rows[0].date if last_night_rows else None
+    last_night: dict[str, Any] = (
+        _merge_daily_summaries(last_night_rows)[last_night_date]
+        if last_night_date is not None
+        else {}
     )
 
     latest_weight_row = session.execute(
@@ -651,25 +673,36 @@ def _readiness_today(session: Session) -> dict[str, Any]:
         .order_by(desc(DailySummary.date))
         .limit(1)
     )
+    garmin_days_old = (
+        (today - latest_garmin_summary.date).days if latest_garmin_summary is not None else None
+    )
+    stale = garmin_days_old is None or garmin_days_old > 1
+
+    week_intensity = session.execute(
+        select(
+            DailySummary.intensity_minutes_moderate,
+            DailySummary.intensity_minutes_vigorous,
+        )
+        .where(DailySummary.source == "garmin")
+        .where(DailySummary.date >= week_start)
+        .where(DailySummary.date <= today)
+    ).all()
+    moderate_values = [int(r[0]) for r in week_intensity if r[0] is not None]
+    vigorous_values = [int(r[1]) for r in week_intensity if r[1] is not None]
 
     payload = {
         "as_of": today.isoformat(),
+        "stale": stale,
         "last_night": {
-            "date": latest_summary.date.isoformat() if latest_summary is not None else None,
-            "sleep_score": latest_summary.sleep_score if latest_summary is not None else None,
-            "sleep_duration_hours": (
-                round(latest_summary.sleep_duration_seconds / 3600.0, 2)
-                if latest_summary is not None and latest_summary.sleep_duration_seconds is not None
-                else None
-            ),
-            "resting_hr": latest_summary.resting_hr if latest_summary is not None else None,
-            "hrv_ms": latest_summary.hrv_ms if latest_summary is not None else None,
-            "respiration_avg": (
-                latest_summary.respiration_avg if latest_summary is not None else None
-            ),
-            "body_battery_low": (
-                latest_summary.body_battery_low if latest_summary is not None else None
-            ),
+            "data_date": last_night_date.isoformat() if last_night_date is not None else None,
+            "days_old": (today - last_night_date).days if last_night_date is not None else None,
+            "sources": last_night.get("sources", []),
+            "sleep_score": last_night.get("sleep_score"),
+            "sleep_duration_hours": last_night.get("sleep_duration_hours"),
+            "resting_hr": last_night.get("resting_hr"),
+            "hrv_ms": last_night.get("hrv_ms"),
+            "respiration_avg": last_night.get("respiration_avg"),
+            "body_battery_low": last_night.get("body_battery_low"),
         },
         "garmin_readiness": {
             "date": (
@@ -695,16 +728,11 @@ def _readiness_today(session: Session) -> dict[str, Any]:
             "vo2_max_cycling": (
                 latest_garmin_summary.vo2_max_cycling if latest_garmin_summary is not None else None
             ),
-            "intensity_minutes_moderate": (
-                latest_garmin_summary.intensity_minutes_moderate
-                if latest_garmin_summary is not None
-                else None
-            ),
-            "intensity_minutes_vigorous": (
-                latest_garmin_summary.intensity_minutes_vigorous
-                if latest_garmin_summary is not None
-                else None
-            ),
+            "intensity_minutes_week_to_date": {
+                "week_start": week_start.isoformat(),
+                "moderate": sum(moderate_values) if moderate_values else None,
+                "vigorous": sum(vigorous_values) if vigorous_values else None,
+            },
         },
         "latest_weight": {
             "date": latest_weight_date,
@@ -723,9 +751,12 @@ def _readiness_today(session: Session) -> dict[str, Any]:
             "avg": rpe_avg,
         },
     }
-    logger.info("mcp.readiness_today", as_of=today.isoformat())
-    # yesterday referenced for callers checking freshness; not in payload directly
-    _ = yesterday
+    logger.info(
+        "mcp.readiness_today",
+        as_of=today.isoformat(),
+        stale=stale,
+        garmin_days_old=garmin_days_old,
+    )
     return payload
 
 

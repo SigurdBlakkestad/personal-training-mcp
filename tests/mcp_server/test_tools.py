@@ -367,6 +367,44 @@ def test_get_daily_summary_merges_sources(session: FakeSession) -> None:
     assert rows[0]["sources"] == ["garmin"]
 
 
+def test_get_daily_summary_garmin_wins_over_withings_on_same_date(
+    session: FakeSession,
+) -> None:
+    day = date(2026, 5, 10)
+    withings = DailySummary(
+        date=day,
+        source="withings",
+        sleep_score=55,
+        sleep_duration_seconds=21600,
+        steps=4000,
+        raw={},
+        ingested_at=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+    )
+    garmin = DailySummary(
+        date=day,
+        source="garmin",
+        sleep_score=82,
+        sleep_duration_seconds=27000,
+        resting_hr=48,
+        hrv_ms=72.5,
+        raw={},
+        ingested_at=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+    )
+
+    for ordering in ([garmin, withings], [withings, garmin]):
+        session.dispatch = lambda stmt, rs=ordering: rs if "daily_summary" in str(stmt) else []
+        rows = tools._get_daily_summary(session, day, day)
+
+        assert len(rows) == 1
+        assert rows[0]["sources"] == ["garmin", "withings"]
+        assert rows[0]["sleep_score"] == 82
+        assert rows[0]["sleep_duration_hours"] == 7.5
+        assert rows[0]["resting_hr"] == 48
+        assert rows[0]["hrv_ms"] == 72.5
+        # Garmin had no steps that day; Withings fills only that gap.
+        assert rows[0]["steps"] == 4000
+
+
 def test_get_training_load_trend_aligns_dates(session: FakeSession) -> None:
     d1 = date(2026, 5, 9)
     d2 = date(2026, 5, 10)
@@ -554,6 +592,8 @@ def test_readiness_today_composes_fields(session: FakeSession) -> None:
 
     def dispatch(stmt: Any) -> Any:
         stmt_str = str(stmt)
+        if "max(daily_summary.date)" in stmt_str:
+            return [summary]
         if "body_measurements" in stmt_str:
             return [weight_row]
         if "weight_7d_avg" in stmt_str:
@@ -579,6 +619,154 @@ def test_readiness_today_composes_fields(session: FakeSession) -> None:
     assert result["training_load"]["tsb"] == pytest.approx(-12.5)
     assert result["recent_rpe"]["count"] == 3
     assert result["recent_rpe"]["avg"] == pytest.approx(7.0)
+
+
+def _readiness_dispatch(
+    last_night_rows: list[DailySummary],
+    intensity_rows: list[tuple[int | None, int | None]] | None = None,
+    seen: list[str] | None = None,
+) -> Any:
+    def dispatch(stmt: Any) -> Any:
+        stmt_str = str(stmt)
+        if seen is not None:
+            seen.append(stmt_str)
+        if "max(daily_summary.date)" in stmt_str:
+            return last_night_rows
+        if "daily_summary" in stmt_str and "intensity_minutes_moderate" in stmt_str:
+            return intensity_rows or []
+        return []
+
+    return dispatch
+
+
+def _as_of(session: FakeSession) -> date:
+    """The date _readiness_today treats as today, so fixtures follow the
+    tool's own clock rather than a separately computed one."""
+    return date.fromisoformat(tools._readiness_today(session)["as_of"])
+
+
+def _garmin_summary(day: date, **fields: Any) -> DailySummary:
+    return DailySummary(
+        date=day,
+        source="garmin",
+        raw={},
+        ingested_at=datetime.combine(day, time(12), tzinfo=UTC),
+        **fields,
+    )
+
+
+def test_readiness_today_prefers_garmin_row_when_withings_shares_the_date(
+    session: FakeSession,
+) -> None:
+    today = _as_of(session)
+    withings = DailySummary(
+        date=today,
+        source="withings",
+        sleep_score=60,
+        sleep_duration_seconds=21600,
+        raw={},
+        ingested_at=datetime.combine(today, time(9), tzinfo=UTC),
+    )
+    garmin = _garmin_summary(
+        today,
+        sleep_score=81,
+        resting_hr=47,
+        hrv_ms=70.0,
+        respiration_avg=13.5,
+        body_battery_low=22,
+    )
+    # Withings row arrives first: it must not shadow Garmin's physiology.
+    session.dispatch = _readiness_dispatch([withings, garmin])
+    session.scalar_dispatch = lambda stmt: garmin
+
+    last_night = tools._readiness_today(session)["last_night"]
+
+    assert last_night["data_date"] == today.isoformat()
+    assert last_night["days_old"] == 0
+    assert last_night["sources"] == ["garmin", "withings"]
+    assert last_night["sleep_score"] == 81
+    assert last_night["resting_hr"] == 47
+    assert last_night["hrv_ms"] == 70.0
+    assert last_night["respiration_avg"] == 13.5
+    assert last_night["body_battery_low"] == 22
+    # Garmin had no sleep duration that night, so Withings fills the gap.
+    assert last_night["sleep_duration_hours"] == 6.0
+
+
+def test_readiness_today_sums_intensity_minutes_week_to_date(session: FakeSession) -> None:
+    today = _as_of(session)
+    seen: list[str] = []
+    session.dispatch = _readiness_dispatch(
+        [_garmin_summary(today, intensity_minutes_moderate=5, intensity_minutes_vigorous=0)],
+        intensity_rows=[(30, 10), (45, None), (None, 20), (5, 0)],
+        seen=seen,
+    )
+    session.scalar_dispatch = lambda stmt: _garmin_summary(today)
+
+    result = tools._readiness_today(session)
+
+    week = result["fitness"]["intensity_minutes_week_to_date"]
+    week_start = date.fromisoformat(week["week_start"])
+    assert week_start.weekday() == 0
+    assert 0 <= (today - week_start).days <= 6
+    assert week["moderate"] == 80
+    assert week["vigorous"] == 30
+    intensity_sql = next(s for s in seen if "intensity_minutes_moderate" in s and "max(" not in s)
+    assert "daily_summary.source = 'garmin'" in intensity_sql
+    assert f"daily_summary.date >= '{week_start.isoformat()}'" in intensity_sql
+
+
+def test_readiness_today_intensity_none_without_garmin_rows(session: FakeSession) -> None:
+    session.dispatch = _readiness_dispatch([])
+
+    week = tools._readiness_today(session)["fitness"]["intensity_minutes_week_to_date"]
+
+    assert week["moderate"] is None
+    assert week["vigorous"] is None
+
+
+def test_readiness_today_flags_stale_garmin_data(session: FakeSession) -> None:
+    three_days_ago = _as_of(session) - timedelta(days=3)
+    garmin = _garmin_summary(three_days_ago, sleep_score=75, hrv_ms=60.0)
+    seen: list[str] = []
+    session.dispatch = _readiness_dispatch([garmin], seen=seen)
+    session.scalar_dispatch = lambda stmt: garmin
+
+    result = tools._readiness_today(session)
+
+    assert result["stale"] is True
+    # last_night is anchored on Garmin's newest date, so a newer Withings-only
+    # date cannot make stale Garmin data look like last night.
+    last_night_sql = next(s for s in seen if "max(daily_summary.date)" in s)
+    assert "coalesce" in last_night_sql
+    assert "daily_summary.source = 'garmin'" in last_night_sql
+    assert result["last_night"]["data_date"] == three_days_ago.isoformat()
+    assert result["last_night"]["days_old"] == 3
+
+
+@pytest.mark.parametrize("days_old", [0, 1])
+def test_readiness_today_not_stale_for_today_or_yesterday(
+    session: FakeSession, days_old: int
+) -> None:
+    day = _as_of(session) - timedelta(days=days_old)
+    garmin = _garmin_summary(day, sleep_score=75)
+    session.dispatch = _readiness_dispatch([garmin])
+    session.scalar_dispatch = lambda stmt: garmin
+
+    result = tools._readiness_today(session)
+
+    assert result["stale"] is False
+    assert result["last_night"]["days_old"] == days_old
+
+
+def test_readiness_today_stale_without_any_garmin_summary(session: FakeSession) -> None:
+    session.dispatch = _readiness_dispatch([])
+
+    result = tools._readiness_today(session)
+
+    assert result["stale"] is True
+    assert result["last_night"]["data_date"] is None
+    assert result["last_night"]["days_old"] is None
 
 
 # ---------------------------------------------------------------------------
