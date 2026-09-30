@@ -206,7 +206,11 @@ class WithingsIngestor(IngestorBase):
                     continue
                 measurement = self._map_measure_group(group)
                 if measurement is None:
-                    log.warning("withings.body.group_skipped", grpid=group.get("grpid"))
+                    log.warning(
+                        "withings.body.group_skipped",
+                        grpid=group.get("grpid"),
+                        date=group.get("date"),
+                    )
                     continue
                 outcome = self.upsert_body_measurement(session, measurement)
                 result.records_processed += 1
