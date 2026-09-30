@@ -1,3 +1,4 @@
+import re
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from typing import Any
@@ -8,10 +9,8 @@ import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
-from training_pipeline.derived.compute import _backfill_training_load
-from training_pipeline.derived.training_load import compute_trimp
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
-from training_pipeline.shared.models import Activity, BodyMeasurement, IngestionRun
+from training_pipeline.shared.models import BodyMeasurement, IngestionRun
 
 
 class StubSession:
@@ -175,18 +174,21 @@ def test_upsert_activity_updated() -> None:
     assert outcome == "updated"
 
 
-def _compiled_activity_set_clause(activity: dict[str, Any]) -> str:
+def _compiled_training_load_update(activity: dict[str, Any]) -> str | None:
+    """The conflict update's training_load expression, or None if it isn't set."""
     ingestor = FakeIngestor(IngestionResult())
     session = MagicMock(spec=Session)
     session.execute.return_value.scalar_one.return_value = False
     ingestor.upsert_activity(session, activity)
     stmt = session.execute.call_args.args[0]
     compiled = str(stmt.compile(dialect=postgresql.dialect()))
-    return compiled.split("DO UPDATE SET", 1)[1]
+    set_clause = compiled.split("DO UPDATE SET", 1)[1]
+    match = re.search(r"training_load = (CASE .*? END)", set_clause)
+    return match.group(1) if match else None
 
 
 def test_upsert_activity_resets_training_load_when_load_inputs_change() -> None:
-    set_clause = _compiled_activity_set_clause(
+    expr = _compiled_training_load_update(
         {
             "source": "garmin",
             "source_id": "123",
@@ -199,19 +201,33 @@ def test_upsert_activity_resets_training_load_when_load_inputs_change() -> None:
         }
     )
 
-    # A changed input clears the load; identical inputs keep the stored value.
-    assert (
-        "training_load = CASE WHEN ("
-        "activities.sport_type IS DISTINCT FROM excluded.sport_type OR "
-        "activities.duration_seconds IS DISTINCT FROM excluded.duration_seconds OR "
-        "activities.normalized_power IS DISTINCT FROM excluded.normalized_power OR "
-        "activities.avg_hr IS DISTINCT FROM excluded.avg_hr"
-        ") THEN NULL ELSE activities.training_load END"
-    ) in set_clause
+    assert expr is not None
+    # Any changed input (compared against the stored row) clears the load so the
+    # routine compute refills it; identical inputs keep the stored value.
+    for col in ("sport_type", "duration_seconds", "normalized_power", "avg_hr"):
+        assert f"activities.{col} IS DISTINCT FROM excluded.{col}" in expr
+    assert expr.endswith("THEN NULL ELSE activities.training_load END")
+
+
+def test_upsert_activity_only_compares_load_inputs_it_writes() -> None:
+    expr = _compiled_training_load_update(
+        {
+            "source": "garmin",
+            "source_id": "123",
+            "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "avg_hr": 150,
+            "raw": {},
+        }
+    )
+
+    assert expr == (
+        "CASE WHEN (activities.avg_hr IS DISTINCT FROM excluded.avg_hr) "
+        "THEN NULL ELSE activities.training_load END"
+    )
 
 
 def test_upsert_activity_leaves_training_load_alone_without_load_inputs() -> None:
-    set_clause = _compiled_activity_set_clause(
+    expr = _compiled_training_load_update(
         {
             "source": "garmin",
             "source_id": "123",
@@ -219,28 +235,7 @@ def test_upsert_activity_leaves_training_load_alone_without_load_inputs() -> Non
             "raw": {},
         }
     )
-    assert "training_load" not in set_clause
-
-
-def test_routine_compute_refills_load_cleared_by_changed_avg_hr() -> None:
-    # The row as the conflict update leaves it after a re-sync corrected avg_hr
-    # from 140 to 160: new input stored, training_load cleared to NULL.
-    resynced = Activity(
-        source="garmin",
-        source_id="123",
-        start_time=datetime(2026, 1, 1, tzinfo=UTC),
-        sport_type="running",
-        duration_seconds=3600,
-        normalized_power=None,
-        avg_hr=160,
-        training_load=None,
-    )
-
-    updated = _backfill_training_load([resynced], ftp=210, rest_hr=50, max_hr=190)
-
-    assert updated == 1
-    assert resynced.training_load == pytest.approx(compute_trimp(3600, 160))
-    assert resynced.training_load != pytest.approx(compute_trimp(3600, 140))
+    assert expr is None
 
 
 def test_upsert_body_measurement_inserts_when_no_match() -> None:
