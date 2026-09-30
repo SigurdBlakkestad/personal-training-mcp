@@ -61,3 +61,13 @@ def test_results_are_sorted_by_week_then_sport() -> None:
     )
     weeks_in_order = [row.week_of for row in result]
     assert weeks_in_order == sorted(weeks_in_order)
+
+
+def test_monday_after_midnight_local_counts_in_that_week() -> None:
+    # 2026-09-27T22:30Z is Monday 2026-09-28 00:30 in Oslo (CEST), so it belongs
+    # to the week of the 28th, not the UTC Sunday's week of the 21st.
+    result = compute_weekly_loads(
+        [_activity(start=datetime(2026, 9, 27, 22, 30, tzinfo=UTC), sport="running", load=70.0)]
+    )
+    weeks = {(row.week_of, row.sport): row.load for row in result}
+    assert weeks == {(date(2026, 9, 28), "running"): 70.0, (date(2026, 9, 28), "total"): 70.0}
