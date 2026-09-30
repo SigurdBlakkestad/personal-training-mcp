@@ -1,3 +1,4 @@
+import json
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -57,7 +58,9 @@ class WithingsIngestor(IngestorBase):
 
         # The stored row is the live token; the secret only seeds the first run.
         initial_refresh = (
-            load_service_credential(WITHINGS_CREDENTIAL_SERVICE) or settings.WITHINGS_REFRESH_TOKEN
+            load_service_credential(WITHINGS_CREDENTIAL_SERVICE)
+            or _legacy_cursor_refresh_token(session)
+            or settings.WITHINGS_REFRESH_TOKEN
         )
         access_token, new_refresh = self._refresh_access_token(
             client_id=settings.WITHINGS_CLIENT_ID,
@@ -273,6 +276,29 @@ class WithingsIngestor(IngestorBase):
             sleep_dates=len(sleep_by_date),
             merged_dates=len(all_dates),
         )
+
+
+def _legacy_cursor_refresh_token(session: Session) -> str | None:
+    """Transitional: the refresh token earlier runs kept in ``ingestion_runs.cursor``.
+
+    Before the ``withings`` row existed, the live token lived only in the latest
+    successful run's cursor. The first run that saves the row makes this
+    unreachable. Remove once the withings row exists in prod.
+    """
+    latest = session.scalar(
+        select(IngestionRun)
+        .where(IngestionRun.source == "withings", IngestionRun.status == "success")
+        .order_by(desc(IngestionRun.finished_at))
+        .limit(1)
+    )
+    if latest is None or not latest.cursor:
+        return None
+    try:
+        data = json.loads(latest.cursor)
+    except json.JSONDecodeError:
+        return None
+    token = data.get("refresh_token") if isinstance(data, dict) else None
+    return token if isinstance(token, str) and token else None
 
 
 def _parse_ymd(value: Any) -> date | None:

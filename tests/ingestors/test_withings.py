@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
@@ -141,7 +142,7 @@ def test_stored_refresh_token_preferred_over_secret(
     assert credential_store == {"withings": "next-refresh"}
 
 
-def test_secret_seeds_refresh_token_when_no_stored_row(
+def test_secret_seeds_refresh_token_when_no_row_and_no_cursor(
     credential_store: dict[str, str],
 ) -> None:
     captured: list[str] = []
@@ -150,6 +151,36 @@ def test_secret_seeds_refresh_token_when_no_stored_row(
 
     assert captured == [FakeSettings.WITHINGS_REFRESH_TOKEN]
     assert credential_store == {"withings": "next-refresh"}
+
+
+def test_legacy_cursor_token_used_and_saved_when_no_stored_row(
+    credential_store: dict[str, str],
+) -> None:
+    captured: list[str] = []
+    legacy_run = MagicMock()
+    legacy_run.cursor = json.dumps({"refresh_token": "cursor-refresh"})
+    session = _make_session()
+    session.scalar.return_value = legacy_run
+
+    _run_sync(_empty_handler("next-refresh", captured), session=session)
+
+    assert captured == ["cursor-refresh"]
+    assert credential_store == {"withings": "next-refresh"}
+
+
+def test_stored_row_preferred_over_legacy_cursor(
+    credential_store: dict[str, str],
+) -> None:
+    credential_store["withings"] = "stored-refresh"
+    captured: list[str] = []
+    legacy_run = MagicMock()
+    legacy_run.cursor = json.dumps({"refresh_token": "cursor-refresh"})
+    session = _make_session()
+    session.scalar.return_value = legacy_run
+
+    _run_sync(_empty_handler("next-refresh", captured), session=session)
+
+    assert captured == ["stored-refresh"]
 
 
 def _weigh_in(grpid: int, when: datetime, grams: int) -> dict[str, Any]:
