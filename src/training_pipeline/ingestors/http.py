@@ -12,17 +12,9 @@ from tenacity import (
 )
 
 from training_pipeline.shared.logging import get_logger
+from training_pipeline.shared.retry import is_retryable
 
 logger = get_logger(__name__)
-
-
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return 500 <= exc.response.status_code < 600
-    return isinstance(
-        exc,
-        httpx.ConnectError | httpx.ConnectTimeout | httpx.ReadTimeout | httpx.RemoteProtocolError,
-    )
 
 
 class HttpClient:
@@ -95,7 +87,7 @@ class HttpClient:
         retryer = Retrying(
             stop=stop_after_attempt(self._max_attempts),
             wait=wait_exponential(multiplier=1, min=self._backoff_min, max=self._backoff_max),
-            retry=retry_if_exception(_is_retryable),
+            retry=retry_if_exception(is_retryable),
             reraise=True,
         )
         return retryer(_do)

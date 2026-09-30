@@ -1,17 +1,30 @@
-"""Thin wrapper around ``notion_client.Client`` adding 429 retries and logs.
+"""Thin wrapper around ``notion_client.Client`` adding retries and logs.
 
-Notion publishes a soft limit of ~3 requests/sec. ``HTTPResponseError`` with
-status 429 is the rate-limit signal; tenacity retries it with exponential
-backoff. Other 4xx errors (validation, not-found, permission) must surface
-immediately so callers can handle them or fail loudly.
+Retries follow the repo policy (5xx and connection-level errors, via
+``shared.retry``) plus Notion's documented rate-limit signal, 429, whose
+``Retry-After`` header is honoured up to ``backoff_max``. Other 4xx errors
+(validation, not-found, permission) surface immediately so callers can handle
+them or fail loudly.
+
+Writes that append content (``pages.create``, ``blocks.children.append``) are
+not idempotent: a 5xx or timeout may arrive after Notion applied them, so a
+retry would duplicate the page or blocks. Those ops retry only when Notion
+provably did not process the request (429, or the connection never opened).
+
+``notion_client`` wraps HTTP status errors in ``HTTPResponseError`` (or its
+subclass ``APIResponseError``) and every ``httpx`` timeout in
+``RequestTimeoutError``; other transport errors propagate as raw ``httpx``
+exceptions.
 """
 
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from notion_client import Client
-from notion_client.errors import APIResponseError, HTTPResponseError
+from notion_client.errors import APIResponseError, HTTPResponseError, RequestTimeoutError
 from tenacity import (
+    RetryCallState,
     Retrying,
     retry_if_exception,
     stop_after_attempt,
@@ -19,16 +32,35 @@ from tenacity import (
 )
 
 from training_pipeline.shared.logging import get_logger
+from training_pipeline.shared.retry import is_retryable, is_retryable_status
 
 logger = get_logger(__name__)
 
+_RATE_LIMITED = 429
 
-def _is_rate_limited(exc: BaseException) -> bool:
+
+def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, HTTPResponseError):
-        return exc.status == 429
-    if isinstance(exc, APIResponseError):
-        return exc.status == 429
-    return False
+        return exc.status == _RATE_LIMITED or is_retryable_status(exc.status)
+    return isinstance(exc, RequestTimeoutError) or is_retryable(exc)
+
+
+def _is_retryable_non_idempotent(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPResponseError):
+        return exc.status == _RATE_LIMITED
+    return isinstance(exc, httpx.ConnectError)
+
+
+def _retry_after_seconds(exc: BaseException | None) -> float | None:
+    if not isinstance(exc, HTTPResponseError) or exc.status != _RATE_LIMITED:
+        return None
+    raw = exc.headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return None
 
 
 class NotionClient:
@@ -42,18 +74,33 @@ class NotionClient:
     ) -> None:
         self._client = Client(auth=token)
         self._max_attempts = max_attempts
-        self._backoff_min = backoff_min
         self._backoff_max = backoff_max
+        self._backoff = wait_exponential(multiplier=1, min=backoff_min, max=backoff_max)
 
-    def _retrying(self) -> Retrying:
+    def _wait(self, retry_state: RetryCallState) -> float:
+        backoff = self._backoff(retry_state)
+        outcome = retry_state.outcome
+        retry_after = _retry_after_seconds(outcome.exception() if outcome else None)
+        if retry_after is None:
+            return backoff
+        return max(backoff, min(retry_after, self._backoff_max))
+
+    def _retrying(self, *, idempotent: bool) -> Retrying:
         return Retrying(
             stop=stop_after_attempt(self._max_attempts),
-            wait=wait_exponential(multiplier=1, min=self._backoff_min, max=self._backoff_max),
-            retry=retry_if_exception(_is_rate_limited),
+            wait=self._wait,
+            retry=retry_if_exception(_is_retryable if idempotent else _is_retryable_non_idempotent),
             reraise=True,
         )
 
-    def _call(self, op_name: str, func: Callable[..., Any], **kwargs: Any) -> Any:
+    def _call(
+        self,
+        op_name: str,
+        func: Callable[..., Any],
+        *,
+        idempotent: bool = True,
+        **kwargs: Any,
+    ) -> Any:
         def _do() -> Any:
             try:
                 return func(**kwargs)
@@ -68,8 +115,13 @@ class NotionClient:
             except HTTPResponseError as exc:
                 logger.warning("notion.http_error", op=op_name, status=exc.status)
                 raise
+            except (RequestTimeoutError, httpx.TransportError) as exc:
+                logger.warning(
+                    "notion.transport_error", op=op_name, error_type=exc.__class__.__name__
+                )
+                raise
 
-        return self._retrying()(_do)
+        return self._retrying(idempotent=idempotent)(_do)
 
     def query_database(
         self,
@@ -109,7 +161,7 @@ class NotionClient:
             kwargs["children"] = children
         if icon is not None:
             kwargs["icon"] = icon
-        result = self._call("pages.create", self._client.pages.create, **kwargs)
+        result = self._call("pages.create", self._client.pages.create, idempotent=False, **kwargs)
         return dict(result)
 
     def update_page(
@@ -151,6 +203,7 @@ class NotionClient:
         result = self._call(
             "blocks.children.append",
             self._client.blocks.children.append,
+            idempotent=False,
             block_id=block_id,
             children=children,
         )
