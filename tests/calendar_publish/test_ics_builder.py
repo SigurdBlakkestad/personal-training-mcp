@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from typing import Any
 from uuid import uuid4
@@ -78,6 +79,30 @@ def test_uid_changes_when_session_type_changes() -> None:
     week = date(2026, 5, 18)
     session_date = date(2026, 5, 18)
     assert stable_uid(week, session_date, "Cycling") != stable_uid(week, session_date, "Lifting")
+
+
+def test_two_same_type_sessions_on_one_date_get_distinct_uids() -> None:
+    plan = _plan(
+        date(2026, 5, 18),
+        [
+            {"date": "2026-05-19", "session_type": "Run", "title": "AM easy", "time": "07:00"},
+            {"date": "2026-05-19", "session_type": "Run", "title": "PM strides", "time": "18:00"},
+        ],
+    )
+    events = list(build_calendar([plan]).events)
+    assert len(events) == 2
+    assert len({e.uid for e in events}) == 2
+    assert render([plan]).count("BEGIN:VEVENT") == 2
+
+
+def test_single_session_uid_is_unchanged_from_original_seed() -> None:
+    # Subscribed calendars already hold UIDs built from this exact seed; the
+    # first session of a (date, type) must keep it or every event duplicates.
+    seed = b"2026-05-18|2026-05-19|Run"
+    expected = f"{hashlib.sha256(seed).hexdigest()[:24]}@personal-training-mcp"
+    plan = _plan(date(2026, 5, 18), [{"date": "2026-05-19", "session_type": "Run"}])
+    event = next(iter(build_calendar([plan]).events))
+    assert event.uid == expected
 
 
 def test_default_start_time_is_eight_am_local() -> None:

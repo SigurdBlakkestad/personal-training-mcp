@@ -131,7 +131,12 @@ def log_session(
     tags: list[str] | None = None,
     activity_id: str | None = None,
 ) -> dict[str, Any]:
-    """Write a manual log. If activity_id is provided the log is linked to it."""
+    """Write a manual log. If activity_id is provided the log is linked to it.
+
+    At least one field must be set. rpe is 1-10, pain_score 0-10, notes at most
+    2000 characters. Invalid input is rejected with every problem listed and
+    nothing is saved.
+    """
     return tools.log_session(
         activity_id=activity_id,
         rpe=rpe,
@@ -174,6 +179,11 @@ def save_weekly_plan(week_of: str, plan: list[dict[str, Any]], notes: str = "") 
         - notes: free-text notes (optional)
       notes: optional notes about the whole week.
 
+    Length caps: title 200 characters, description 4000, notes 2000. Every
+    session date must fall inside week_of..week_of+6. Invalid input is
+    rejected with every problem listed and nothing is saved, so fix them all
+    and retry.
+
     Example session:
       {"date": "2026-05-15", "session_type": "cycling",
        "title": "Z2 Endurance 80 min", "duration_min": 80,
@@ -202,7 +212,10 @@ def sync_plan_to_notion() -> dict[str, Any]:
 def update_athlete_context(updates: dict[str, Any]) -> dict[str, Any]:
     """Upsert the single-row athlete profile.
 
-    Supported fields: ftp_watts, max_hr, body_weight_kg, current_phase, notes.
+    Supported fields: ftp_watts (positive int), max_hr (positive int),
+    body_weight_kg (positive number), current_phase (text, max 200 chars),
+    notes (text, max 2000 chars). Pass null to clear a field. Invalid input is
+    rejected with every problem listed and nothing is saved.
     """
     return tools.update_athlete_context(updates)
 

@@ -3,12 +3,15 @@
 Each session in a plan becomes a VEVENT. UIDs are a stable hash of
 ``(week_of, date, session_type)`` so regenerating the calendar with the same
 plan input yields identical UIDs — iOS Calendar therefore updates the existing
-events in place rather than duplicating them.
+events in place rather than duplicating them. A second or later session of the
+same type on the same date adds its ordinal to the hash so a double day keeps
+both events.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Iterable
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
@@ -72,10 +75,19 @@ def _parse_duration(value: Any) -> timedelta:
     return timedelta(minutes=DEFAULT_DURATION_MINUTES)
 
 
-def stable_uid(week_of: date_type, session_date: date_type, session_type: str) -> str:
-    """Return a UID that is stable across regenerations for the same session."""
-    seed = f"{week_of.isoformat()}|{session_date.isoformat()}|{session_type}".encode()
-    digest = hashlib.sha256(seed).hexdigest()[:24]
+def stable_uid(
+    week_of: date_type, session_date: date_type, session_type: str, occurrence: int = 0
+) -> str:
+    """Return a UID that is stable across regenerations for the same session.
+
+    ``occurrence`` is the session's 0-based ordinal among same-type sessions on
+    ``session_date``. The first one keeps the original seed so calendars that
+    already subscribe to the feed don't see duplicated events.
+    """
+    seed_text = f"{week_of.isoformat()}|{session_date.isoformat()}|{session_type}"
+    if occurrence:
+        seed_text = f"{seed_text}|{occurrence}"
+    digest = hashlib.sha256(seed_text.encode()).hexdigest()[:24]
     return f"{digest}@{UID_DOMAIN}"
 
 
@@ -103,7 +115,14 @@ def _build_description(session: dict[str, Any], *, public: bool) -> str:
     return "\n".join(parts)
 
 
-def _session_to_event(plan: WeeklyPlan, session: dict[str, Any], *, public: bool) -> Event | None:
+def _session_to_event(
+    plan: WeeklyPlan,
+    session: dict[str, Any],
+    *,
+    public: bool,
+    seen: Counter[tuple[date_type, str]],
+) -> Event | None:
+    """Build one VEVENT. ``seen`` counts this plan's (date, type) pairs so far."""
     session_date = _parse_session_date(_first_present(session, DATE_KEYS))
     if session_date is None:
         return None
@@ -125,7 +144,9 @@ def _session_to_event(plan: WeeklyPlan, session: dict[str, Any], *, public: bool
     event.name = event_name
     event.begin = begin
     event.duration = _parse_duration(_first_present(session, DURATION_KEYS))
-    event.uid = stable_uid(plan.week_of, session_date, session_type)
+    key = (session_date, session_type)
+    event.uid = stable_uid(plan.week_of, session_date, session_type, occurrence=seen[key])
+    seen[key] += 1
     description = _build_description(session, public=public)
     if description:
         event.description = description
@@ -143,10 +164,11 @@ def build_calendar(plans: Iterable[WeeklyPlan], *, public: bool = False) -> Cale
     for plan in plans:
         if not isinstance(plan.plan, list):
             continue
+        seen: Counter[tuple[date_type, str]] = Counter()
         for session in plan.plan:
             if not isinstance(session, dict):
                 continue
-            event = _session_to_event(plan, session, public=public)
+            event = _session_to_event(plan, session, public=public, seen=seen)
             if event is not None:
                 calendar.events.add(event)
     return calendar
