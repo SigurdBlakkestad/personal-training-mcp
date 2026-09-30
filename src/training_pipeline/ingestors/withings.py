@@ -1,10 +1,12 @@
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import desc, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
 from training_pipeline.ingestors.http import HttpClient
@@ -15,12 +17,20 @@ from training_pipeline.shared.credentials import (
 )
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import IngestionRun
+from training_pipeline.shared.retry import is_connect_failure, is_retryable
 
 logger = get_logger(__name__)
 
 WITHINGS_API_BASE = "https://wbsapi.withings.net"
 WITHINGS_CREDENTIAL_SERVICE = "withings"
 WITHINGS_DEFAULT_LOOKBACK_DAYS = 30
+# Subtracted from the last run's start before it becomes `lastupdate`, to cover
+# Withings' own ingestion lag and clock skew. Re-fetched groups upsert idempotently.
+WITHINGS_LASTUPDATE_OVERLAP = timedelta(hours=1)
+# getmeas category 1 = real measurements (2 = user objectives/goals).
+WITHINGS_MEASURE_CATEGORY_REAL = 1
+WITHINGS_CREDENTIAL_SAVE_ATTEMPTS = 3
+WITHINGS_CREDENTIAL_SAVE_BACKOFF_SECONDS = 0.5
 
 # Withings measure type codes → body_measurements column name.
 # Only codes that map to schema columns are written; values for unmapped codes
@@ -70,7 +80,7 @@ class WithingsIngestor(IngestorBase):
         # Withings invalidates the old refresh token on every refresh, so persist
         # the new one now, outside the ingestion session: a later failure in
         # this run rolls that session back, and the rotation must survive it.
-        save_service_credential(WITHINGS_CREDENTIAL_SERVICE, new_refresh)
+        self._save_refresh_token(new_refresh, log)
         log.info("withings.refresh_token.stored", rotated=new_refresh != initial_refresh)
 
         effective_since = since if since is not None else self._compute_since(session)
@@ -103,7 +113,27 @@ class WithingsIngestor(IngestorBase):
         )
         if latest is None:
             return datetime.now(UTC) - timedelta(days=WITHINGS_DEFAULT_LOOKBACK_DAYS)
-        return latest
+        return latest - WITHINGS_LASTUPDATE_OVERLAP
+
+    def _save_refresh_token(self, refresh_token: str, log: Any) -> None:
+        retryer = Retrying(
+            stop=stop_after_attempt(WITHINGS_CREDENTIAL_SAVE_ATTEMPTS),
+            wait=wait_exponential(multiplier=WITHINGS_CREDENTIAL_SAVE_BACKOFF_SECONDS),
+            retry=retry_if_exception_type(SQLAlchemyError),
+            reraise=True,
+        )
+        try:
+            retryer(save_service_credential, WITHINGS_CREDENTIAL_SERVICE, refresh_token)
+        except SQLAlchemyError:
+            log.exception(
+                "withings.refresh_token.save_failed",
+                attempts=WITHINGS_CREDENTIAL_SAVE_ATTEMPTS,
+                message=(
+                    "Withings already consumed the previous refresh token and the new "
+                    "one could not be stored; re-run scripts/withings_auth.py to re-authorize."
+                ),
+            )
+            raise
 
     def _refresh_access_token(
         self, *, client_id: str, client_secret: str, refresh_token: str
@@ -118,6 +148,10 @@ class WithingsIngestor(IngestorBase):
                 "refresh_token": refresh_token,
             },
             headers=None,
+            # The refresh rotates the token server-side: once the request may have
+            # reached Withings, a replay would send the now-invalidated token and
+            # lose the rotated one. Retry only if it provably never arrived.
+            retry_on=is_connect_failure,
         )
         access_token = body["access_token"]
         new_refresh = body.get("refresh_token", refresh_token)
@@ -131,8 +165,9 @@ class WithingsIngestor(IngestorBase):
         *,
         data: Mapping[str, Any],
         headers: Mapping[str, str] | None,
+        retry_on: Callable[[BaseException], bool] = is_retryable,
     ) -> dict[str, Any]:
-        response = self._http.post(path, data=data, headers=headers)
+        response = self._http.post(path, data=data, headers=headers, retry_on=retry_on)
         envelope = response.json()
         if not isinstance(envelope, dict):
             raise WithingsAPIError(f"withings response not a dict: path={path}")
@@ -157,7 +192,11 @@ class WithingsIngestor(IngestorBase):
         # `lastupdate` filters on when Withings received the measurement, not
         # when it was taken, so a weigh-in that reaches the cloud after a run
         # (scale offline, late Wi-Fi sync) is still picked up by the next one.
-        data: dict[str, Any] = {"action": "getmeas", "lastupdate": int(since.timestamp())}
+        data: dict[str, Any] = {
+            "action": "getmeas",
+            "category": WITHINGS_MEASURE_CATEGORY_REAL,
+            "lastupdate": int(since.timestamp()),
+        }
         group_count = 0
         pages = 0
         while True:

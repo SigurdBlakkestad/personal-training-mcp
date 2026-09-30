@@ -31,9 +31,13 @@ The script:
 3. Withings redirects back to the local server with a `code` parameter.
 4. The script exchanges the code for tokens and prints three lines:
    `WITHINGS_ACCESS_TOKEN`, `WITHINGS_REFRESH_TOKEN`, `WITHINGS_USERID`.
+5. It writes the refresh token to the `withings` row in `service_credentials`
+   (needs `DATABASE_URL`, as in `.env`). That row is the live token: the
+   ingestor reads it and saves every rotation back.
 
 Paste each line into `.env`, and add each as a GitHub Actions secret in
-**Settings → Secrets and variables → Actions**.
+**Settings → Secrets and variables → Actions**. `WITHINGS_REFRESH_TOKEN` is
+only the seed used when the row doesn't exist.
 
 Re-run only if the refresh token is revoked or the Withings developer app
 is rotated.

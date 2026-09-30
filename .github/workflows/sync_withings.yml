@@ -43,7 +43,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           recovery: |
             Usually a revoked or expired refresh token. The live token is the
-            `withings` row in `service_credentials`: re-bootstrap with
-            `python scripts/withings_auth.py`, update the
-            `WITHINGS_REFRESH_TOKEN` secret, and delete that row. See
+            `withings` row in `service_credentials`: re-bootstrap locally with
+            `python scripts/withings_auth.py` (it writes the fresh token to
+            that row), then update the `WITHINGS_REFRESH_TOKEN` secret. See
             OPERATIONS.md.

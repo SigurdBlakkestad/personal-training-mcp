@@ -6,13 +6,14 @@ WITHINGS_USERID:
     python scripts/withings_auth.py
 
 Requires WITHINGS_CLIENT_ID and WITHINGS_CLIENT_SECRET in your environment
-(or you'll be prompted). The Withings developer app's callback URL must be
-http://localhost:8765/callback to match this script.
+(or you'll be prompted), and DATABASE_URL (as in .env). The Withings developer
+app's callback URL must be http://localhost:8765/callback to match this script.
 
-After tokens print, paste each line into .env and add each as a GitHub
-repository secret. The Withings ingestor refreshes the access token
-automatically; you only re-run this if the refresh token is revoked or
-the Withings developer app is rotated.
+The refresh token is written straight to the `withings` row in
+service_credentials, which is where the ingestor reads and rotates it. Also
+update the WITHINGS_REFRESH_TOKEN secret with the printed value; it is only the
+seed for when that row doesn't exist. Re-run only if the refresh token is
+revoked or the Withings developer app is rotated.
 """
 
 from __future__ import annotations
@@ -27,10 +28,15 @@ import urllib.parse
 import urllib.request
 from urllib.error import HTTPError, URLError
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from training_pipeline.shared.credentials import save_service_credential
+
 REDIRECT_URI = "http://localhost:8765/callback"
 CALLBACK_PORT = 8765
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
+CREDENTIAL_SERVICE = "withings"
 SCOPES = "user.activity,user.metrics,user.info"
 
 
@@ -171,9 +177,20 @@ def main() -> int:
     print(f"WITHINGS_USERID={userid}")
     print("=" * 60)
     print()
-    print("Access tokens last ~3 hours; the ingestor refreshes via refresh_token")
-    print("automatically. Withings rotates refresh tokens on use — the ingestor")
-    print("logs a WARN when that happens so you can update the GitHub Secret.")
+
+    try:
+        save_service_credential(CREDENTIAL_SERVICE, refresh_token)
+    except SQLAlchemyError as exc:
+        raise SystemExit(
+            f"Could not store the refresh token in service_credentials ({type(exc).__name__}). "
+            "Check DATABASE_URL and re-run; until the row holds this token, the "
+            "ingestor keeps using the old one."
+        ) from exc
+
+    print(f"Stored the refresh token in service_credentials (service={CREDENTIAL_SERVICE!r}).")
+    print("The ingestor reads it from there and saves each rotation back, so no")
+    print("further secret updates are needed. Still set WITHINGS_REFRESH_TOKEN to")
+    print("the value above: it is the seed used only if that row is ever missing.")
     return 0
 
 

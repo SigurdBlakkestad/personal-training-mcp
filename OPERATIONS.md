@@ -64,16 +64,12 @@ All on GitHub Actions. View runs at `github.com/<user>/personal-training-mcp/act
 
 **Where the live token lives:** the `withings` row in `service_credentials`, not the `WITHINGS_REFRESH_TOKEN` secret. Withings issues a new refresh token on every refresh and invalidates the previous one, so each run saves the new token in its own transaction straight after refreshing — a sync that fails later in the same run still keeps it. The secret is only the seed used when that row doesn't exist yet.
 
-**Likely cause:** the stored token was revoked or expired (e.g. unused for months, or access withdrawn in the Withings app).
+**Likely cause:** the stored token was revoked or expired (e.g. unused for months, or access withdrawn in the Withings app), or a run refreshed but could not store the new token (`withings.refresh_token.save_failed` in the log).
 
 **Fix:**
-1. Re-run `python scripts/withings_auth.py` locally to bootstrap fresh tokens
-2. Update the `WITHINGS_REFRESH_TOKEN` (and `WITHINGS_ACCESS_TOKEN`) GitHub Secrets
-3. Clear the rejected row so the fresh seed is picked up:
-   `delete from service_credentials where service = 'withings';`
-4. Re-trigger the workflow
-
-Skipping step 3 leaves the run on the rejected token and the new secret is ignored.
+1. Re-run `python scripts/withings_auth.py` locally with `DATABASE_URL` set (as in `.env`). It writes the fresh refresh token straight to the `withings` row.
+2. Update the `WITHINGS_REFRESH_TOKEN` (and `WITHINGS_ACCESS_TOKEN`) GitHub Secrets with the printed values, so the seed is current too
+3. Re-trigger the workflow
 
 ### "Garmin workflow failing"
 

@@ -1,5 +1,5 @@
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import TracebackType
 from typing import Any, Self
 
@@ -62,6 +62,7 @@ class HttpClient:
         data: Mapping[str, Any] | None = None,
         json: Any = None,
         headers: Mapping[str, str] | None = None,
+        retry_on: Callable[[BaseException], bool] = is_retryable,
     ) -> httpx.Response:
         def _do() -> httpx.Response:
             start = time.monotonic()
@@ -87,7 +88,7 @@ class HttpClient:
         retryer = Retrying(
             stop=stop_after_attempt(self._max_attempts),
             wait=wait_exponential(multiplier=1, min=self._backoff_min, max=self._backoff_max),
-            retry=retry_if_exception(is_retryable),
+            retry=retry_if_exception(retry_on),
             reraise=True,
         )
         return retryer(_do)

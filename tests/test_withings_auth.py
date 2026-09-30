@@ -12,6 +12,9 @@ import urllib.parse
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+from sqlalchemy.exc import OperationalError
+
 
 def _load_script() -> ModuleType:
     path = Path(__file__).resolve().parent.parent / "scripts" / "withings_auth.py"
@@ -43,3 +46,49 @@ def test_module_constants_match_documented_endpoints() -> None:
     assert module.TOKEN_URL == "https://wbsapi.withings.net/v2/oauth2"
     assert module.REDIRECT_URI == "http://localhost:8765/callback"
     assert module.CALLBACK_PORT == 8765
+
+
+def test_main_stores_refresh_token_in_service_credentials(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_script()
+    saved: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "_read_credential", lambda env, prompt, secret=False: "x")
+    monkeypatch.setattr(module, "_wait_for_callback", lambda state: "code")
+    monkeypatch.setattr(
+        module,
+        "_exchange_code",
+        lambda cid, secret, code: {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "userid": 42,
+        },
+    )
+    monkeypatch.setattr(
+        module, "save_service_credential", lambda service, payload: saved.append((service, payload))
+    )
+
+    assert module.main() == 0
+
+    assert saved == [("withings", "fresh-refresh")]
+    assert "WARN" not in capsys.readouterr().out
+
+
+def test_main_exits_when_the_row_cannot_be_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_script()
+    monkeypatch.setattr(module, "_read_credential", lambda env, prompt, secret=False: "x")
+    monkeypatch.setattr(module, "_wait_for_callback", lambda state: "code")
+    monkeypatch.setattr(
+        module,
+        "_exchange_code",
+        lambda cid, secret, code: {"access_token": "a", "refresh_token": "r", "userid": 1},
+    )
+
+    def fail(service: str, payload: str) -> None:
+        raise OperationalError("upsert", {}, Exception("db down"))
+
+    monkeypatch.setattr(module, "save_service_credential", fail)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.main()
+    assert "service_credentials" in str(excinfo.value)

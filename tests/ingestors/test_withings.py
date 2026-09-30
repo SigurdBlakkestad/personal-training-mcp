@@ -1,13 +1,16 @@
 import json
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+from structlog.testing import capture_logs
 
+from training_pipeline.ingestors import withings
 from training_pipeline.ingestors.base import IngestionResult
 from training_pipeline.ingestors.http import HttpClient
 from training_pipeline.ingestors.withings import (
@@ -183,6 +186,117 @@ def test_stored_row_preferred_over_legacy_cursor(
     assert captured == ["stored-refresh"]
 
 
+def test_refresh_not_retried_after_read_timeout(
+    credential_store: dict[str, str],
+) -> None:
+    # The request may have reached Withings and rotated the token; a replay
+    # would send the invalidated token and lose the rotated one.
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path == "/v2/oauth2":
+            attempts += 1
+            raise httpx.ReadTimeout("response lost", request=request)
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    with pytest.raises(httpx.ReadTimeout):
+        _run_sync(handler)
+
+    assert attempts == 1
+    assert credential_store == {}
+
+
+def test_refresh_not_retried_after_5xx() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path == "/v2/oauth2":
+            attempts += 1
+            return httpx.Response(502)
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _run_sync(handler)
+
+    assert attempts == 1
+
+
+def test_refresh_retried_when_connection_never_opened() -> None:
+    attempts = 0
+    base = _empty_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path == "/v2/oauth2":
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ConnectError("refused", request=request)
+        return base(request)
+
+    _run_sync(handler)
+
+    assert attempts == 2
+
+
+def test_data_calls_still_retry_read_timeouts() -> None:
+    measure_attempts = 0
+    base = _empty_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal measure_attempts
+        if request.url.path == "/measure":
+            measure_attempts += 1
+            if measure_attempts == 1:
+                raise httpx.ReadTimeout("slow", request=request)
+        return base(request)
+
+    _run_sync(handler)
+
+    assert measure_attempts == 2
+
+
+def _flaky_save(failures: int, store: dict[str, str]) -> Callable[[str, str], None]:
+    calls = 0
+
+    def save(service: str, payload: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls <= failures:
+            raise OperationalError("upsert", {}, Exception("db unavailable"))
+        store[service] = payload
+
+    return save
+
+
+def test_refresh_token_save_retried_on_db_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    store: dict[str, str] = {}
+    monkeypatch.setattr(withings, "WITHINGS_CREDENTIAL_SAVE_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(withings, "save_service_credential", _flaky_save(2, store))
+
+    _run_sync(_empty_handler("rotated-refresh"))
+
+    assert store == {"withings": "rotated-refresh"}
+
+
+def test_refresh_token_save_failure_logged_and_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    store: dict[str, str] = {}
+    monkeypatch.setattr(withings, "WITHINGS_CREDENTIAL_SAVE_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(withings, "save_service_credential", _flaky_save(3, store))
+
+    with capture_logs() as logs, pytest.raises(OperationalError):
+        _run_sync(_empty_handler("rotated-refresh"))
+
+    assert store == {}
+    failures = [e for e in logs if e["event"] == "withings.refresh_token.save_failed"]
+    assert len(failures) == 1
+    assert failures[0]["log_level"] == "error"
+    assert failures[0]["attempts"] == 3
+    assert "withings_auth.py" in failures[0]["message"]
+    assert all("rotated-refresh" not in repr(entry) for entry in logs)
+
+
 def _weigh_in(grpid: int, when: datetime, grams: int) -> dict[str, Any]:
     return {
         "grpid": grpid,
@@ -205,6 +319,7 @@ def test_body_measurements_fetched_by_lastupdate() -> None:
 
     assert len(forms) == 1
     assert forms[0]["action"] == "getmeas"
+    assert forms[0]["category"] == "1"
     assert forms[0]["lastupdate"] == str(int(since.timestamp()))
     assert "startdate" not in forms[0]
     assert "enddate" not in forms[0]
@@ -263,14 +378,14 @@ def test_pagination_without_a_new_offset_raises() -> None:
         _run_sync(handler)
 
 
-def test_default_since_is_last_successful_run_start() -> None:
+def test_default_since_is_last_run_start_minus_overlap() -> None:
     session = _make_session()
     started = datetime(2026, 4, 15, 5, 30, tzinfo=UTC)
     session.scalar.return_value = started
 
     since = WithingsIngestor(http_client=MagicMock())._compute_since(session)
 
-    assert since == started
+    assert since == started - timedelta(hours=1)
     stmt = session.scalar.call_args.args[0]
     assert [col.name for col in stmt.selected_columns] == ["started_at"]
 
