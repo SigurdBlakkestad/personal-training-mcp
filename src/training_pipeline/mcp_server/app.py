@@ -7,8 +7,9 @@ custom route on the server.
 
 Auth is opt-in by configuration: when the four MCP_GITHUB_*/MCP_PUBLIC_URL/
 MCP_ALLOWED_GITHUB_LOGINS settings are present (see auth.build_auth) the server
-requires GitHub OAuth login; when they are absent it runs OPEN and logs a loud
-warning on every boot. Running open is deliberate so the connector keeps
+requires GitHub OAuth login; when all of them are absent it runs OPEN and logs a
+loud warning on every boot. Setting only some of them fails startup rather than
+running open. Running open is deliberate so the connector keeps
 working until the operator chooses to turn auth on — it is not a silent default.
 """
 
