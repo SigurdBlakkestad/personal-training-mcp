@@ -5,9 +5,21 @@ on:
     - cron: "45 5 * * *"
   workflow_dispatch:
 
+# Garmin rotates its refresh token on every refresh and invalidates the old
+# one, so two overlapping runs (e.g. a manual dispatch during the scheduled
+# run) can leave the invalidated token stored. Queue runs rather than cancel
+# one mid-token-write.
+concurrency:
+  group: garmin-token
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Backstop only. A job-level timeout ends the run as 'cancelled', which
+    # report-failure ignores; the step timeouts below end it as 'failure', so a
+    # hung step still files the alert.
+    timeout-minutes: 30
     # No continue-on-error: Garmin is its own workflow, so a red run here never
     # blocks Strava/Withings (those run on their own schedules). Failing loud is
     # deliberate — a silent "success" once hid a 4-month token outage.
@@ -27,18 +39,23 @@ jobs:
         run: pip install -e .
 
       - name: Sync Garmin
+        timeout-minutes: 15
         id: sync
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GARMINTOKENS_B64: ${{ secrets.GARMINTOKENS_B64 }}
           LOG_LEVEL: INFO
-        run: python -m training_pipeline.cli sync --source garmin
+        # exec: on timeout/cancel the runner signals the step's shell, not its
+        # children. Without exec python is killed without running the finally
+        # that persists a token rotated mid-sync.
+        run: exec python -m training_pipeline.cli sync --source garmin
 
       # Derived metrics run here rather than on their own schedule: computing
       # CTL/ATL/TSB on data that failed to sync reports a confident "success"
       # over stale numbers, which is exactly how a 6-day Garmin outage stayed
       # invisible.
       - name: Compute derived
+        timeout-minutes: 10
         id: compute
         if: steps.sync.outcome == 'success'
         env:
@@ -55,7 +72,7 @@ jobs:
           if [ "${{ steps.sync.outcome }}" = "success" ]; then
             echo "Garmin sync: success" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Garmin sync: FAILED — stored token rejected, or the library needs a bump" >> "$GITHUB_STEP_SUMMARY"
+            echo "Garmin sync: FAILED — stored token rejected, the library needs a bump, or the step timed out" >> "$GITHUB_STEP_SUMMARY"
             echo "Recovery: see OPERATIONS.md 'Garmin workflow failing'. Re-running scripts/garmin_auth.py is not enough on its own — the rejected service_credentials row has to be cleared so the new secret is used as the seed." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "Derived metrics: ${{ steps.compute.outcome || 'skipped' }}" >> "$GITHUB_STEP_SUMMARY"

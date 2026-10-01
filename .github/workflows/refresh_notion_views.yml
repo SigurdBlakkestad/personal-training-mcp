@@ -8,9 +8,15 @@ on:
     - cron: "30 5 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: notion-views
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # Backstop; the step timeout below fails loud (see sync_garmin.yml).
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -26,6 +32,7 @@ jobs:
         run: pip install "httpx>=0.27"
 
       - name: Refresh Upcoming view filter to today
+        timeout-minutes: 5
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_PLAN_ID: ${{ secrets.NOTION_DB_PLAN_ID }}

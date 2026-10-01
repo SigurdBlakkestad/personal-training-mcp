@@ -5,9 +5,15 @@ on:
     - cron: "30 6 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: notion-mirror
+  cancel-in-progress: false
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
+    # Backstop; the step timeout below fails loud (see sync_garmin.yml).
+    timeout-minutes: 30
     permissions:
       contents: read
       issues: write
@@ -24,6 +30,7 @@ jobs:
         run: pip install -e .
 
       - name: Mirror to Notion
+        timeout-minutes: 20
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
