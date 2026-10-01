@@ -149,6 +149,8 @@ python -m training_pipeline.cli compute-derived
 
 The ingestors are idempotent on (source, source_id) so this is safe to re-run.
 
+It is also safe to run while a scheduled sync is in flight. Garmin and Withings each hold a Postgres advisory lock on their stored token: Garmin for the whole sync, Withings only while it refreshes. A second run waits up to 5 minutes for the lock, then fails with `LockNotAvailable` and leaves the running sync's token alone; re-run it once the other finishes. The lock needs `DATABASE_URL` to be a direct or session-mode connection (port 5432), not Supabase's transaction pooler (6543). Garmin recovery is the exception: delete the stored `garmin` row only while no Garmin sync is running, or that sync writes its token straight back.
+
 ---
 
 ## Local development
