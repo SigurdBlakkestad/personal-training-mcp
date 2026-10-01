@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 import pytest
 
@@ -27,3 +27,25 @@ def test_local_date_uses_athlete_timezone() -> None:
     assert local_time.local_date(datetime(2026, 9, 27, 22, 30, tzinfo=UTC)) == date(2026, 9, 28)
     # Winter (CET, UTC+1): 22:30Z is still the same local day.
     assert local_time.local_date(datetime(2026, 1, 10, 22, 30, tzinfo=UTC)) == date(2026, 1, 10)
+
+
+def test_local_day_bounds_use_athlete_timezone() -> None:
+    # Summer (CEST, UTC+2).
+    start = local_time.local_day_start(date(2026, 9, 29))
+    end = local_time.local_day_end(date(2026, 9, 29))
+    assert start.isoformat() == "2026-09-29T00:00:00+02:00"
+    assert end.isoformat() == "2026-09-29T23:59:59.999999+02:00"
+    assert start == datetime(2026, 9, 28, 22, 0, tzinfo=UTC)
+    # Winter (CET, UTC+1).
+    assert local_time.local_day_start(date(2026, 1, 10)).isoformat() == (
+        "2026-01-10T00:00:00+01:00"
+    )
+
+
+def test_local_day_bounds_span_dst_change() -> None:
+    # 25 Oct 2026: clocks go back at 03:00 CEST, so the day is 25 hours long.
+    start = local_time.local_day_start(date(2026, 10, 25))
+    end = local_time.local_day_end(date(2026, 10, 25))
+    assert start.utcoffset() == timedelta(hours=2)
+    assert end.utcoffset() == timedelta(hours=1)
+    assert local_time.local_date(start) == local_time.local_date(end) == date(2026, 10, 25)

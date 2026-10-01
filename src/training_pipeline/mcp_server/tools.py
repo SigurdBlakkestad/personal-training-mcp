@@ -7,7 +7,7 @@ directly in unit tests with mocked sessions.
 """
 
 import math
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from typing import Any, NoReturn
 from uuid import UUID
@@ -30,7 +30,12 @@ from training_pipeline.notion_sync.plan_mirror import (
 )
 from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.db import get_session
-from training_pipeline.shared.local_time import athlete_tz, local_date, local_today
+from training_pipeline.shared.local_time import (
+    local_date,
+    local_day_end,
+    local_day_start,
+    local_today,
+)
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
     Activity,
@@ -328,8 +333,8 @@ def _merge_daily_summaries(
 def _get_daily_summary(
     session: Session, start_date: date_type, end_date: date_type
 ) -> list[dict[str, Any]]:
-    start_dt = datetime.combine(start_date, time.min, tzinfo=athlete_tz())
-    end_dt = datetime.combine(end_date, time.max, tzinfo=athlete_tz())
+    start_dt = local_day_start(start_date)
+    end_dt = local_day_end(end_date)
 
     summaries = list(
         session.scalars(
@@ -436,7 +441,7 @@ def _get_weekly_load(session: Session, weeks: int) -> list[dict[str, Any]]:
             Activity.start_time,
             Activity.sport_type,
             func.coalesce(Activity.duration_seconds, 0),
-        ).where(Activity.start_time >= datetime.combine(start, time.min, tzinfo=athlete_tz()))
+        ).where(Activity.start_time >= local_day_start(start))
     ).all()
     seconds = sum_by_week_and_sport(
         (start_time, sport, float(duration)) for start_time, sport, duration in activity_rows
@@ -472,7 +477,7 @@ def get_weekly_load(weeks: int = 8) -> list[dict[str, Any]]:
 def _get_weight_trend(session: Session, weeks: int) -> list[dict[str, Any]]:
     today = local_today()
     start = today - timedelta(weeks=weeks)
-    start_dt = datetime.combine(start, time.min, tzinfo=athlete_tz())
+    start_dt = local_day_start(start)
 
     measurements = session.execute(
         select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
@@ -553,14 +558,10 @@ def _search_sessions(session: Session, filters: dict[str, Any]) -> list[dict[str
     stmt = select(Activity).order_by(desc(Activity.start_time)).limit(ACTIVITY_RESULT_CAP)
 
     if "date_from" in filters and filters["date_from"] is not None:
-        start = datetime.combine(
-            date_type.fromisoformat(str(filters["date_from"])), time.min, tzinfo=athlete_tz()
-        )
+        start = local_day_start(date_type.fromisoformat(str(filters["date_from"])))
         stmt = stmt.where(Activity.start_time >= start)
     if "date_to" in filters and filters["date_to"] is not None:
-        end = datetime.combine(
-            date_type.fromisoformat(str(filters["date_to"])), time.max, tzinfo=athlete_tz()
-        )
+        end = local_day_end(date_type.fromisoformat(str(filters["date_to"])))
         stmt = stmt.where(Activity.start_time <= end)
     if "sport_type" in filters and filters["sport_type"] is not None:
         stmt = stmt.where(Activity.sport_type == filters["sport_type"])
@@ -604,11 +605,10 @@ def _weight_vs_preceding_week(session: Session, today: date_type) -> dict[str, A
     matching the derived averages. The average excludes the latest day, so a
     weekly weigher's drop shows up instead of being averaged away.
     """
-    tz = athlete_tz()
     latest_at = session.execute(
         select(func.max(BodyMeasurement.measured_at))
         .where(BodyMeasurement.weight_kg.is_not(None))
-        .where(BodyMeasurement.measured_at <= datetime.combine(today, time.max, tzinfo=tz))
+        .where(BodyMeasurement.measured_at <= local_day_end(today))
     ).first()
     if latest_at is None or latest_at[0] is None:
         return {
@@ -625,8 +625,8 @@ def _weight_vs_preceding_week(session: Session, today: date_type) -> dict[str, A
     rows = session.execute(
         select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
         .where(BodyMeasurement.weight_kg.is_not(None))
-        .where(BodyMeasurement.measured_at >= datetime.combine(avg_start, time.min, tzinfo=tz))
-        .where(BodyMeasurement.measured_at <= datetime.combine(latest_day, time.max, tzinfo=tz))
+        .where(BodyMeasurement.measured_at >= local_day_start(avg_start))
+        .where(BodyMeasurement.measured_at <= local_day_end(latest_day))
     ).all()
     by_day = daily_weights(
         (measured_at, float(weight)) for measured_at, weight in rows if weight is not None
@@ -666,7 +666,7 @@ def _readiness_today(session: Session) -> dict[str, Any]:
     today = local_today()
     # RPE_WINDOW_DAYS local days, today included.
     horizon = today - timedelta(days=RPE_WINDOW_DAYS - 1)
-    horizon_dt = datetime.combine(horizon, time.min, tzinfo=athlete_tz())
+    horizon_dt = local_day_start(horizon)
     week_start = today - timedelta(days=today.weekday())
 
     # "Last night" is Garmin's newest date (Garmin is authoritative); other

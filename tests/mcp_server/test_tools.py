@@ -774,6 +774,24 @@ def test_readiness_rpe_counts_every_session_in_window(session: FakeSession) -> N
     assert f"'{horizon} 00:00:00+02:00'" in rpe_sql or f"'{horizon} 00:00:00+01:00'" in rpe_sql
 
 
+def test_readiness_bounds_are_athlete_local_days(
+    session: FakeSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A weigh-in at 01:00 Oslo on the 30th (23:00Z on the 29th) is tomorrow's,
+    # so the latest-weight cutoff must be Oslo end of day, not UTC.
+    monkeypatch.setattr(tools, "local_today", lambda: date(2026, 9, 29))
+    seen: list[str] = []
+    session.dispatch = _weight_dispatch([], seen)
+
+    tools._readiness_today(session)
+
+    latest_sql = next(s for s in seen if "max(body_measurements.measured_at)" in s)
+    assert "body_measurements.measured_at <= '2026-09-29 23:59:59.999999+02:00'" in latest_sql
+    rpe_sql = next(s for s in seen if "manual_logs" in s)
+    # 21 local days including today start at Oslo midnight on the 9th.
+    assert "manual_logs.logged_at >= '2026-09-09 00:00:00+02:00'" in rpe_sql
+
+
 def test_readiness_rpe_counts_relogged_session_once(session: FakeSession) -> None:
     relogged = uuid4()
     # Newest first, as the query orders them: the correction wins.
