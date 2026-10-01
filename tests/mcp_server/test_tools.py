@@ -571,6 +571,24 @@ def test_search_sessions_rejects_unknown_filters(session: FakeSession) -> None:
         tools._search_sessions(session, {"foo": 1})
 
 
+def test_search_sessions_date_bounds_are_athlete_local(session: FakeSession) -> None:
+    # 00:30 Oslo on 29 Sep is 22:30 UTC on 28 Sep; a UTC-midnight bound
+    # would drop it from date_from=2026-09-29.
+    rendered: list[str] = []
+
+    def dispatch(stmt: str) -> list[Any]:
+        rendered.append(stmt)
+        return []
+
+    session.dispatch = dispatch
+
+    tools._search_sessions(session, {"date_from": "2026-09-29", "date_to": "2026-09-30"})
+
+    (stmt,) = rendered
+    assert "activities.start_time >= '2026-09-29 00:00:00+02:00'" in stmt
+    assert "activities.start_time <= '2026-09-30 23:59:59.999999+02:00'" in stmt
+
+
 def test_search_sessions_applies_rpe_and_pain_filters(session: FakeSession) -> None:
     a1 = _make_activity(activity_id=uuid4())
     a2 = _make_activity(activity_id=uuid4())
