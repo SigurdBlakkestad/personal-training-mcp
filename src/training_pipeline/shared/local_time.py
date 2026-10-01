@@ -5,7 +5,7 @@ today" are answered in ``ATHLETE_TZ``: a session at 00:30 Oslo time belongs to
 that day (and, on a Monday, to that ISO week), not to the previous UTC day.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from functools import cache
 from zoneinfo import ZoneInfo
 
@@ -24,3 +24,13 @@ def local_date(dt: datetime) -> date:
 
 def local_today() -> date:
     return local_date(datetime.now(UTC))
+
+
+def local_day_start(d: date) -> datetime:
+    """First instant of the athlete's calendar day ``d``, as an aware datetime."""
+    return datetime.combine(d, time.min, tzinfo=athlete_tz())
+
+
+def local_day_end(d: date) -> datetime:
+    """Last instant of the athlete's calendar day ``d``, as an aware datetime."""
+    return datetime.combine(d, time.max, tzinfo=athlete_tz())

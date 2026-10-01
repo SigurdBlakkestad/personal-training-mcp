@@ -1,7 +1,7 @@
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -13,7 +13,7 @@ from training_pipeline.derived.training_load import compute_training_load
 from training_pipeline.derived.weekly_load import WeeklyLoadInput, compute_weekly_loads
 from training_pipeline.derived.weight_trend import compute_weight_trend
 from training_pipeline.shared.config import get_settings
-from training_pipeline.shared.local_time import athlete_tz, local_date, local_today
+from training_pipeline.shared.local_time import local_date, local_day_start, local_today
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import Activity, BodyMeasurement, DerivedMetric
 
@@ -66,9 +66,7 @@ def recompute_all(
 
     counts = RecomputeCounts()
 
-    warmup_start = datetime.combine(
-        effective_since - timedelta(days=EWMA_WARMUP_DAYS), time.min, tzinfo=athlete_tz()
-    )
+    warmup_start = local_day_start(effective_since - timedelta(days=EWMA_WARMUP_DAYS))
     activities = list(
         session.scalars(
             select(Activity)
@@ -185,7 +183,7 @@ def _upsert_weekly_load(session: Session, activities: Iterable[Activity], *, sin
 
 
 def _upsert_weight_trend(session: Session, *, since: date) -> int:
-    history_start = datetime.combine(since - timedelta(days=27), time.min, tzinfo=athlete_tz())
+    history_start = local_day_start(since - timedelta(days=27))
     rows_raw = session.execute(
         select(BodyMeasurement.measured_at, BodyMeasurement.weight_kg)
         .where(BodyMeasurement.weight_kg.is_not(None))
