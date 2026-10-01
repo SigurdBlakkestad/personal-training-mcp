@@ -552,12 +552,12 @@ def _search_sessions(session: Session, filters: dict[str, Any]) -> list[dict[str
 
     if "date_from" in filters and filters["date_from"] is not None:
         start = datetime.combine(
-            date_type.fromisoformat(str(filters["date_from"])), time.min, tzinfo=UTC
+            date_type.fromisoformat(str(filters["date_from"])), time.min, tzinfo=athlete_tz()
         )
         stmt = stmt.where(Activity.start_time >= start)
     if "date_to" in filters and filters["date_to"] is not None:
         end = datetime.combine(
-            date_type.fromisoformat(str(filters["date_to"])), time.max, tzinfo=UTC
+            date_type.fromisoformat(str(filters["date_to"])), time.max, tzinfo=athlete_tz()
         )
         stmt = stmt.where(Activity.start_time <= end)
     if "sport_type" in filters and filters["sport_type"] is not None:
