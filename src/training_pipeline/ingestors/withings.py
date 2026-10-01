@@ -1,4 +1,3 @@
-import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -73,7 +72,6 @@ class WithingsIngestor(IngestorBase):
             # The stored row is the live token; the secret only seeds the first run.
             initial_refresh = (
                 load_service_credential(WITHINGS_CREDENTIAL_SERVICE)
-                or _legacy_cursor_refresh_token(session)
                 or settings.WITHINGS_REFRESH_TOKEN
             )
             access_token, new_refresh = self._refresh_access_token(
@@ -214,6 +212,11 @@ class WithingsIngestor(IngestorBase):
                     continue
                 measurement = self._map_measure_group(group)
                 if measurement is None:
+                    log.warning(
+                        "withings.body.group_skipped",
+                        grpid=group.get("grpid"),
+                        date=group.get("date"),
+                    )
                     continue
                 outcome = self.upsert_body_measurement(session, measurement)
                 result.records_processed += 1
@@ -231,13 +234,19 @@ class WithingsIngestor(IngestorBase):
 
     def _map_measure_group(self, group: dict[str, Any]) -> dict[str, Any] | None:
         epoch = group.get("date")
-        if epoch is None:
+        grpid = group.get("grpid")
+        # grpid is the upsert key; without it a re-fetch could not find its row.
+        if epoch is None or not isinstance(grpid, int) or isinstance(grpid, bool):
             return None
         measured_at = datetime.fromtimestamp(int(epoch), tz=UTC)
+        # Every mapped column is written, so a re-fetched group replaces the
+        # stored row wholesale: a measure Withings dropped is cleared, not kept.
         mapped: dict[str, Any] = {
             "source": "withings",
+            "source_id": str(grpid),
             "measured_at": measured_at,
             "raw": group,
+            **dict.fromkeys(WITHINGS_MEASURE_TYPE_TO_COLUMN.values()),
         }
         for measure in group.get("measures") or []:
             if not isinstance(measure, dict):
@@ -320,29 +329,6 @@ class WithingsIngestor(IngestorBase):
             sleep_dates=len(sleep_by_date),
             merged_dates=len(all_dates),
         )
-
-
-def _legacy_cursor_refresh_token(session: Session) -> str | None:
-    """Transitional: the refresh token earlier runs kept in ``ingestion_runs.cursor``.
-
-    Before the ``withings`` row existed, the live token lived only in the latest
-    successful run's cursor. The first run that saves the row makes this
-    unreachable. Remove once the withings row exists in prod.
-    """
-    latest = session.scalar(
-        select(IngestionRun)
-        .where(IngestionRun.source == "withings", IngestionRun.status == "success")
-        .order_by(desc(IngestionRun.finished_at))
-        .limit(1)
-    )
-    if latest is None or not latest.cursor:
-        return None
-    try:
-        data = json.loads(latest.cursor)
-    except json.JSONDecodeError:
-        return None
-    token = data.get("refresh_token") if isinstance(data, dict) else None
-    return token if isinstance(token, str) and token else None
 
 
 def _parse_ymd(value: Any) -> date | None:

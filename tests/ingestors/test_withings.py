@@ -1,4 +1,3 @@
-import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -197,7 +196,7 @@ def test_stored_refresh_token_preferred_over_secret(
     assert credential_store == {"withings": "next-refresh"}
 
 
-def test_secret_seeds_refresh_token_when_no_row_and_no_cursor(
+def test_secret_seeds_refresh_token_when_no_stored_row(
     credential_store: dict[str, str],
 ) -> None:
     captured: list[str] = []
@@ -206,36 +205,6 @@ def test_secret_seeds_refresh_token_when_no_row_and_no_cursor(
 
     assert captured == [FakeSettings.WITHINGS_REFRESH_TOKEN]
     assert credential_store == {"withings": "next-refresh"}
-
-
-def test_legacy_cursor_token_used_and_saved_when_no_stored_row(
-    credential_store: dict[str, str],
-) -> None:
-    captured: list[str] = []
-    legacy_run = MagicMock()
-    legacy_run.cursor = json.dumps({"refresh_token": "cursor-refresh"})
-    session = _make_session()
-    session.scalar.return_value = legacy_run
-
-    _run_sync(_empty_handler("next-refresh", captured), session=session)
-
-    assert captured == ["cursor-refresh"]
-    assert credential_store == {"withings": "next-refresh"}
-
-
-def test_stored_row_preferred_over_legacy_cursor(
-    credential_store: dict[str, str],
-) -> None:
-    credential_store["withings"] = "stored-refresh"
-    captured: list[str] = []
-    legacy_run = MagicMock()
-    legacy_run.cursor = json.dumps({"refresh_token": "cursor-refresh"})
-    session = _make_session()
-    session.scalar.return_value = legacy_run
-
-    _run_sync(_empty_handler("next-refresh", captured), session=session)
-
-    assert captured == ["stored-refresh"]
 
 
 def test_refresh_not_retried_after_read_timeout(
@@ -418,6 +387,29 @@ def test_body_measurements_follow_pagination(monkeypatch: pytest.MonkeyPatch) ->
     assert result.records_processed == 2
 
 
+def test_measure_group_maps_to_full_row_keyed_by_grpid() -> None:
+    mapped = WithingsIngestor(http_client=MagicMock())._map_measure_group(
+        _weigh_in(987654321, datetime(2026, 4, 14, 5, 0, tzinfo=UTC), 80500)
+    )
+
+    assert mapped is not None
+    assert mapped["source_id"] == "987654321"
+    assert mapped["weight_kg"] == pytest.approx(80.5)
+    # Measures absent from the group are written as NULL, so a re-fetched group
+    # that dropped one clears it instead of keeping the stale value.
+    assert mapped["body_fat_pct"] is None
+    assert mapped["muscle_mass_kg"] is None
+    assert mapped["water_pct"] is None
+    assert mapped["bone_mass_kg"] is None
+
+
+def test_measure_group_without_grpid_is_skipped() -> None:
+    group = _weigh_in(1, datetime(2026, 4, 14, 5, 0, tzinfo=UTC), 80500)
+    del group["grpid"]
+
+    assert WithingsIngestor(http_client=MagicMock())._map_measure_group(group) is None
+
+
 def test_pagination_without_a_new_offset_raises() -> None:
     base = _empty_handler()
 
@@ -507,6 +499,7 @@ def test_body_measurements_value_unit_conversion_and_type_mapping() -> None:
     assert len(received) == 1
     payload = received[0]
     assert payload["source"] == "withings"
+    assert payload["source_id"] == "1"
     assert payload["measured_at"] == datetime(2026, 4, 14, 7, 30, tzinfo=UTC)
     assert payload["weight_kg"] == pytest.approx(80.5)
     assert payload["body_fat_pct"] == pytest.approx(17.5)

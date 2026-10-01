@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from training_pipeline.ingestors.base import IngestionResult, IngestorBase
-from training_pipeline.shared.models import BodyMeasurement, IngestionRun
+from training_pipeline.shared.models import IngestionRun
 
 
 class StubSession:
@@ -238,42 +238,54 @@ def test_upsert_activity_leaves_training_load_alone_without_load_inputs() -> Non
     assert expr is None
 
 
-def test_upsert_body_measurement_inserts_when_no_match() -> None:
+def _body_measurement(**overrides: Any) -> dict[str, Any]:
+    return {
+        "source": "withings",
+        "source_id": "123456",
+        "measured_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "weight_kg": 82.4,
+        "body_fat_pct": 18.2,
+        "raw": {},
+        **overrides,
+    }
+
+
+def test_upsert_body_measurement_inserted() -> None:
     ingestor = FakeIngestor(IngestionResult())
     session = MagicMock(spec=Session)
-    session.scalar.return_value = None
+    session.execute.return_value.scalar_one.return_value = True
 
-    outcome = ingestor.upsert_body_measurement(
-        session,
-        {
-            "source": "withings",
-            "measured_at": datetime(2026, 1, 1, tzinfo=UTC),
-            "weight_kg": 80.0,
-            "raw": {},
-        },
-    )
+    outcome = ingestor.upsert_body_measurement(session, _body_measurement())
+
     assert outcome == "inserted"
-    assert session.add.call_count == 1
-    added = session.add.call_args.args[0]
-    assert isinstance(added, BodyMeasurement)
+    session.execute.assert_called_once()
+    session.add.assert_not_called()
 
 
-def test_upsert_body_measurement_returns_updated_when_match() -> None:
+def test_upsert_body_measurement_refetch_updates_on_source_id_conflict() -> None:
+    # Regression for #24: matching on the REAL weight column failed against a
+    # float8 parameter, so a plain re-fetch inserted a duplicate row.
     ingestor = FakeIngestor(IngestionResult())
     session = MagicMock(spec=Session)
-    session.scalar.return_value = MagicMock(spec=BodyMeasurement)
+    session.execute.return_value.scalar_one.return_value = False
 
     outcome = ingestor.upsert_body_measurement(
-        session,
-        {
-            "source": "withings",
-            "measured_at": datetime(2026, 1, 1, tzinfo=UTC),
-            "weight_kg": 80.0,
-            "raw": {},
-        },
+        session, _body_measurement(weight_kg=82.1, body_fat_pct=None)
     )
+
     assert outcome == "updated"
-    session.add.assert_not_called()
+    stmt = session.execute.call_args.args[0]
+    compiled = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT ON CONSTRAINT uq_body_measurements_source_source_id" in compiled
+    set_clause = compiled.split("DO UPDATE SET", 1)[1]
+    assert "weight_kg = excluded.weight_kg" in set_clause
+    assert "body_fat_pct = excluded.body_fat_pct" in set_clause
+    assert "measured_at = excluded.measured_at" in set_clause
+    assert "raw = excluded.raw" in set_clause
+    assert "ingested_at = now()" in set_clause
+    assert "source =" not in set_clause
+    assert "source_id =" not in set_clause
+    assert "WHERE" not in set_clause
 
 
 def test_upsert_daily_summary_inserted() -> None:

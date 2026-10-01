@@ -627,6 +627,8 @@ def _weight_vs_preceding_week(session: Session, today: date_type) -> dict[str, A
         .where(BodyMeasurement.weight_kg.is_not(None))
         .where(BodyMeasurement.measured_at >= local_day_start(avg_start))
         .where(BodyMeasurement.measured_at <= local_day_end(latest_day))
+        # daily_weights keeps the first row on a measured_at tie: the latest ingested.
+        .order_by(BodyMeasurement.measured_at, desc(BodyMeasurement.ingested_at))
     ).all()
     by_day = daily_weights(
         (measured_at, float(weight)) for measured_at, weight in rows if weight is not None
