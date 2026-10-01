@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import io
 import os
 import tarfile
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,7 +16,9 @@ from uuid import uuid4
 
 import pytest
 from garminconnect import GarminConnectAuthenticationError, GarminConnectConnectionError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+from structlog.testing import capture_logs
 
 from training_pipeline.ingestors.base import IngestionResult
 from training_pipeline.ingestors.garmin import (
@@ -95,6 +100,47 @@ class _FakeInnerClient:
 
     def dumps(self) -> str:
         return self._payload
+
+
+ROTATED = '{"di_refresh_token": "rotated"}'
+
+
+@pytest.fixture(autouse=True)
+def credential_lock(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stand-in for the advisory lock; records when it is taken and released."""
+    events: list[str] = []
+
+    @contextmanager
+    def fake_lock(service: str) -> Iterator[None]:
+        events.append(f"lock:{service}")
+        try:
+            yield
+        finally:
+            events.append(f"unlock:{service}")
+
+    monkeypatch.setattr("training_pipeline.ingestors.garmin.service_credential_lock", fake_lock)
+    return events
+
+
+class _RotatingInnerClient(_FakeInnerClient):
+    """Inner client whose refresh rotates the token, as Garmin's DI flow does."""
+
+    def __init__(self, payload: str, rotated: str) -> None:
+        super().__init__(payload)
+        self._rotated = rotated
+
+    def _refresh_di_token(self) -> None:
+        self._payload = self._rotated
+
+
+class _RotatingGarmin:
+    """Stands in for garminconnect's Garmin; login() refreshes a stale token."""
+
+    def __init__(self) -> None:
+        self.client = _RotatingInnerClient('{"di_refresh_token": "old"}', ROTATED)
+
+    def login(self, tokenstore: str) -> None:
+        self.client._refresh_di_token()
 
 
 def _stub_token_store(monkeypatch: pytest.MonkeyPatch, *, stored: str | None) -> list[str]:
@@ -905,6 +951,106 @@ def test_sync_does_not_rewrite_unchanged_tokens(monkeypatch: pytest.MonkeyPatch)
     ingestor._sync(_make_session(), datetime(2026, 9, 17, tzinfo=UTC))
 
     assert saved == []
+
+
+def test_sync_holds_credential_lock_across_the_whole_sync(
+    monkeypatch: pytest.MonkeyPatch, credential_lock: list[str]
+) -> None:
+    """Regression: a local backfill overlapping a scheduled run let each one
+    store a token the other had already rotated away."""
+    monkeypatch.setattr(
+        "training_pipeline.ingestors.garmin.load_stored_tokens",
+        lambda: credential_lock.append("load") or '{"di_refresh_token": "old"}',
+    )
+    monkeypatch.setattr(
+        "training_pipeline.ingestors.garmin.save_stored_tokens",
+        lambda payload: credential_lock.append("persist"),
+    )
+    ingestor = GarminIngestor(client_factory=lambda ts: _FakeGarminClient(ROTATED))
+    ingestor._sync_activities = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda *a: credential_lock.append("activities")
+    )
+    ingestor._sync_daily_summaries = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda *a: credential_lock.append("daily")
+    )
+
+    ingestor._sync(_make_session(), datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert credential_lock == [
+        "lock:garmin",
+        "load",
+        "activities",
+        "daily",
+        "persist",
+        "unlock:garmin",
+    ]
+
+
+def test_sync_releases_credential_lock_when_sync_fails(
+    monkeypatch: pytest.MonkeyPatch, credential_lock: list[str]
+) -> None:
+    _stub_token_store(monkeypatch, stored='{"di_refresh_token": "old"}')
+    ingestor = GarminIngestor(client=_FakeGarminClient(ROTATED))
+    ingestor._sync_activities = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("boom")
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        ingestor._sync(_make_session(), datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert credential_lock == ["lock:garmin", "unlock:garmin"]
+
+
+def test_garminconnect_still_refreshes_through_the_hooked_method() -> None:
+    """``_persist_on_refresh`` replaces a private garminconnect method; fail
+    here, not silently in production, if an upgrade renames or bypasses it."""
+    from garminconnect.client import Client
+
+    source = inspect.getsource(Client._refresh_session)
+    assert "self._refresh_di_token()" in source
+
+
+def test_refresh_persists_rotated_token_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a mid-sync rotation was kept only in memory until the
+    ``finally``, so a SIGKILL or lost runner dropped the only valid token."""
+    saved = _stub_token_store(monkeypatch, stored='{"di_refresh_token": "old"}')
+    client = _RotatingGarmin()
+    ingestor = GarminIngestor()
+    ingestor._persist_on_refresh(client)
+
+    client.client._refresh_di_token()
+
+    assert saved == [ROTATED]
+
+
+def test_initialize_client_persists_a_refresh_during_login_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = _stub_token_store(monkeypatch, stored='{"di_refresh_token": "old"}')
+    monkeypatch.setattr("garminconnect.Garmin", _RotatingGarmin)
+
+    GarminIngestor()._initialize_client()
+
+    assert saved == [ROTATED]
+
+
+def test_refresh_survives_a_failed_persist_and_logs_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """garminconnect swallows errors from the refresh path, so a failed save
+    must be logged here; the ``finally`` retries it."""
+
+    def failing_save(payload: str) -> None:
+        raise OperationalError("upsert", {}, Exception("db down"))
+
+    monkeypatch.setattr("training_pipeline.ingestors.garmin.save_stored_tokens", failing_save)
+    client = _RotatingGarmin()
+    ingestor = GarminIngestor()
+    ingestor._persist_on_refresh(client)
+
+    with capture_logs() as logs:
+        client.client._refresh_di_token()
+
+    assert client.client.dumps() == ROTATED
+    assert [e["event"] for e in logs] == ["garmin.tokens.persist_on_refresh_failed"]
 
 
 def test_compute_since_defaults_to_30_days_ago() -> None:

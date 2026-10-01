@@ -5,9 +5,15 @@ on:
     - cron: "0 5 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: strava-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Backstop; the step timeout below fails loud (see sync_garmin.yml).
+    timeout-minutes: 45
     permissions:
       contents: read
       issues: write
@@ -24,6 +30,8 @@ jobs:
         run: pip install -e .
 
       - name: Sync Strava
+        # StravaIngestor sleeps up to 901 s for a rate-limit window to reset.
+        timeout-minutes: 35
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import importlib.util
 import urllib.parse
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import ModuleType
 
@@ -52,7 +54,15 @@ def test_main_stores_refresh_token_in_service_credentials(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     module = _load_script()
-    saved: list[tuple[str, str]] = []
+    saved: list[tuple[str, str] | str] = []
+
+    @contextmanager
+    def fake_lock(service: str) -> Iterator[None]:
+        saved.append(f"lock:{service}")
+        yield
+        saved.append(f"unlock:{service}")
+
+    monkeypatch.setattr(module, "service_credential_lock", fake_lock)
     monkeypatch.setattr(module, "_read_credential", lambda env, prompt, secret=False: "x")
     monkeypatch.setattr(module, "_wait_for_callback", lambda state: "code")
     monkeypatch.setattr(
@@ -70,7 +80,8 @@ def test_main_stores_refresh_token_in_service_credentials(
 
     assert module.main() == 0
 
-    assert saved == [("withings", "fresh-refresh")]
+    # Under the lock, so a sync mid-refresh can't overwrite it afterwards.
+    assert saved == ["lock:withings", ("withings", "fresh-refresh"), "unlock:withings"]
     assert "WARN" not in capsys.readouterr().out
 
 
@@ -87,6 +98,7 @@ def test_main_exits_when_the_row_cannot_be_stored(monkeypatch: pytest.MonkeyPatc
     def fail(service: str, payload: str) -> None:
         raise OperationalError("upsert", {}, Exception("db down"))
 
+    monkeypatch.setattr(module, "service_credential_lock", lambda service: nullcontext())
     monkeypatch.setattr(module, "save_service_credential", fail)
 
     with pytest.raises(SystemExit) as excinfo:

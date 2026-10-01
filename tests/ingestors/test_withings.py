@@ -1,4 +1,5 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
@@ -39,6 +40,23 @@ def credential_store(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         "training_pipeline.ingestors.withings.save_service_credential", store.__setitem__
     )
     return store
+
+
+@pytest.fixture(autouse=True)
+def credential_lock(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stand-in for the advisory lock; records when it is taken and released."""
+    events: list[str] = []
+
+    @contextmanager
+    def fake_lock(service: str) -> Iterator[None]:
+        events.append(f"lock:{service}")
+        try:
+            yield
+        finally:
+            events.append(f"unlock:{service}")
+
+    monkeypatch.setattr("training_pipeline.ingestors.withings.service_credential_lock", fake_lock)
+    return events
 
 
 def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> HttpClient:
@@ -114,6 +132,40 @@ def test_rotated_refresh_token_saved_to_service_credentials(
     assert credential_store == {"withings": "rotated-refresh"}
     # The token no longer rides on the run's cursor.
     assert result.cursor is None
+
+
+def test_credential_lock_spans_load_refresh_and_save_only(
+    monkeypatch: pytest.MonkeyPatch, credential_lock: list[str]
+) -> None:
+    """Regression: a local sync or withings_auth.py overlapping a scheduled run
+    could store a refresh token the other had already invalidated."""
+    monkeypatch.setattr(
+        withings,
+        "load_service_credential",
+        lambda service: credential_lock.append("load") or "stored-refresh",
+    )
+    monkeypatch.setattr(
+        withings,
+        "save_service_credential",
+        lambda service, token: credential_lock.append("save"),
+    )
+    inner = _empty_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        credential_lock.append(request.url.path)
+        return inner(request)
+
+    _run_sync(handler)
+
+    assert credential_lock[:5] == [
+        "lock:withings",
+        "load",
+        "/v2/oauth2",
+        "save",
+        "unlock:withings",
+    ]
+    # The data fetch runs after the lock is released.
+    assert "/measure" in credential_lock[5:]
 
 
 def test_rotated_refresh_token_survives_failed_sync(

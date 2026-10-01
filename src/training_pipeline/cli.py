@@ -1,7 +1,7 @@
 import argparse
 import sys
-from datetime import UTC, datetime
 from datetime import date as date_type
+from datetime import datetime
 
 from training_pipeline.calendar_publish.publisher import publish as publish_calendar
 from training_pipeline.derived.compute import FORCE_RECOMPUTE_WINDOW_DAYS, recompute_all
@@ -10,6 +10,7 @@ from training_pipeline.ingestors.strava import StravaIngestor
 from training_pipeline.ingestors.withings import WithingsIngestor
 from training_pipeline.notion_sync.runner import run_notion_mirror
 from training_pipeline.shared.db import get_session
+from training_pipeline.shared.local_time import local_day_start
 from training_pipeline.shared.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -18,7 +19,7 @@ logger = get_logger(__name__)
 def _parse_since(value: str | None) -> datetime | None:
     if value is None:
         return None
-    return datetime.combine(date_type.fromisoformat(value), datetime.min.time(), tzinfo=UTC)
+    return local_day_start(date_type.fromisoformat(value))
 
 
 def _build_parser() -> argparse.ArgumentParser:
