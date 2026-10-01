@@ -30,7 +30,10 @@ from urllib.error import HTTPError, URLError
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from training_pipeline.shared.credentials import save_service_credential
+from training_pipeline.shared.credentials import (
+    save_service_credential,
+    service_credential_lock,
+)
 
 REDIRECT_URI = "http://localhost:8765/callback"
 CALLBACK_PORT = 8765
@@ -179,7 +182,10 @@ def main() -> int:
     print()
 
     try:
-        save_service_credential(CREDENTIAL_SERVICE, refresh_token)
+        # Wait out any sync mid-refresh, so it can't overwrite this token
+        # with the one it rotated from the old grant.
+        with service_credential_lock(CREDENTIAL_SERVICE):
+            save_service_credential(CREDENTIAL_SERVICE, refresh_token)
     except SQLAlchemyError as exc:
         raise SystemExit(
             f"Could not store the refresh token in service_credentials ({type(exc).__name__}). "

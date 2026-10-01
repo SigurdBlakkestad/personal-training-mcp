@@ -14,6 +14,7 @@ from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.credentials import (
     load_service_credential,
     save_service_credential,
+    service_credential_lock,
 )
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import IngestionRun
@@ -66,21 +67,25 @@ class WithingsIngestor(IngestorBase):
         log = logger.bind(source="withings")
         settings = get_settings()
 
-        # The stored row is the live token; the secret only seeds the first run.
-        initial_refresh = (
-            load_service_credential(WITHINGS_CREDENTIAL_SERVICE)
-            or _legacy_cursor_refresh_token(session)
-            or settings.WITHINGS_REFRESH_TOKEN
-        )
-        access_token, new_refresh = self._refresh_access_token(
-            client_id=settings.WITHINGS_CLIENT_ID,
-            client_secret=settings.WITHINGS_CLIENT_SECRET,
-            refresh_token=initial_refresh,
-        )
-        # Withings invalidates the old refresh token on every refresh, so persist
-        # the new one now, outside the ingestion session: a later failure in
-        # this run rolls that session back, and the rotation must survive it.
-        self._save_refresh_token(new_refresh, log)
+        # Load, refresh and save under one lock, so no other run can rotate the
+        # stored token between this run reading it and writing its successor.
+        with service_credential_lock(WITHINGS_CREDENTIAL_SERVICE):
+            # The stored row is the live token; the secret only seeds the first run.
+            initial_refresh = (
+                load_service_credential(WITHINGS_CREDENTIAL_SERVICE)
+                or _legacy_cursor_refresh_token(session)
+                or settings.WITHINGS_REFRESH_TOKEN
+            )
+            access_token, new_refresh = self._refresh_access_token(
+                client_id=settings.WITHINGS_CLIENT_ID,
+                client_secret=settings.WITHINGS_CLIENT_SECRET,
+                refresh_token=initial_refresh,
+            )
+            # Withings invalidates the old refresh token on every refresh, so
+            # persist the new one now, outside the ingestion session: a later
+            # failure in this run rolls that session back, and the rotation
+            # must survive it.
+            self._save_refresh_token(new_refresh, log)
         log.info("withings.refresh_token.stored", rotated=new_refresh != initial_refresh)
 
         effective_since = since if since is not None else self._compute_since(session)

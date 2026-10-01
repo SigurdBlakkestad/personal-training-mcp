@@ -22,6 +22,7 @@ from training_pipeline.shared.config import get_settings
 from training_pipeline.shared.credentials import (
     load_service_credential,
     save_service_credential,
+    service_credential_lock,
 )
 from training_pipeline.shared.logging import get_logger
 from training_pipeline.shared.models import (
@@ -479,6 +480,12 @@ class GarminIngestor(IngestorBase):
         return "garmin"
 
     def _sync(self, session: Session, since: datetime | None) -> IngestionResult:
+        # The whole sync, not just login: garminconnect refreshes (and so
+        # rotates) the token whenever it is about to expire, at any request.
+        with service_credential_lock(GARMIN_CREDENTIAL_SERVICE):
+            return self._sync_locked(session, since)
+
+    def _sync_locked(self, session: Session, since: datetime | None) -> IngestionResult:
         log = logger.bind(source="garmin")
 
         client = self._client if self._client is not None else self._initialize_client()
@@ -511,12 +518,36 @@ class GarminIngestor(IngestorBase):
         from garminconnect import Garmin
 
         client = Garmin()
+        self._persist_on_refresh(client)
         client.login(tokenstore=tokenstore)
         # login() refreshes when the access token is stale, and that refresh
         # already rotated the token Garmin will accept next time. Store it
         # before the sync gets a chance to fail.
         self._persist_tokens(client, logger.bind(source="garmin"))
         return client
+
+    def _persist_on_refresh(self, client: Any) -> None:
+        """Store the token the moment garminconnect rotates it.
+
+        Garmin invalidates the previous refresh token on every refresh, and a
+        refresh can happen at any request. Waiting for the ``finally`` in
+        ``_sync_locked`` would lose the rotation to a SIGKILL or a lost runner.
+        """
+        inner = client.client
+        refresh = inner._refresh_di_token
+        log = logger.bind(source="garmin")
+
+        def refresh_and_persist() -> None:
+            refresh()
+            try:
+                self._persist_tokens(client, log)
+            except Exception:
+                # garminconnect swallows anything raised here (logging it at
+                # DEBUG), so log it ourselves; the token stays in memory and
+                # the ``finally`` in ``_sync_locked`` tries again.
+                log.exception("garmin.tokens.persist_on_refresh_failed")
+
+        inner._refresh_di_token = refresh_and_persist
 
     def _load_tokenstore(self) -> str:
         """Return a tokenstore garminconnect accepts.
