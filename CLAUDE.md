@@ -1,10 +1,10 @@
 # personal-training-mcp
 
-Personal training data pipeline ingesting Strava, Withings, and Garmin into Postgres (Supabase). Exposes coaching tools to Claude via a custom MCP server. Mirrors readable views to Notion and the iPhone calendar.
+Personal training data pipeline ingesting Strava, Withings, and Garmin into Postgres (Neon). Exposes coaching tools to Claude via a custom MCP server. Mirrors readable views to Notion and the iPhone calendar.
 
 ## Stack
 
-Python 3.12, Postgres on Supabase, GitHub Actions for scheduling, MCP via FastMCP, structlog for logging.
+Python 3.12, Postgres on Neon, GitHub Actions for scheduling, MCP via FastMCP, structlog for logging.
 
 ## Commands
 

@@ -10,7 +10,7 @@ The script reuses ``StravaIngestor`` so the upsert path is identical to the
 scheduled sync. Activities are idempotent on ``(source, source_id)`` — re-runs
 over an already-synced window will update existing rows, not duplicate them.
 ``DATABASE_URL`` and the Strava OAuth env vars must be set (typically via
-``.env`` for local runs against Supabase prod).
+``.env`` for local runs against Neon prod).
 """
 
 from __future__ import annotations

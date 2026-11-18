@@ -63,14 +63,14 @@ def service_credential_lock(
     The lock is session-level because it spans HTTP calls, so it lives on a
     dedicated autocommit connection (no transaction left idle in between) and
     Postgres drops it if that connection dies. That needs a direct or
-    session-mode connection: Supabase's transaction pooler (port 6543) would
-    hand the unlock to a different backend. Waiting longer than
+    session-mode connection: a transaction pooler (Neon's ``-pooler``
+    endpoint) would hand the unlock to a different backend. Waiting longer than
     ``timeout_seconds`` raises ``sqlalchemy.exc.OperationalError``.
     """
     key = f"service_credentials:{service}"
     engine = get_engine()
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-        # statement_timeout too: Supabase's default (2 min) would otherwise
+        # statement_timeout too: a server default (Supabase's was 2 min) would
         # cancel the wait first. Kept above lock_timeout so that the clearer
         # LockNotAvailable is what a wait that runs out reports.
         conn.execute(
