@@ -106,7 +106,7 @@ The server is kept awake by an external ping against its `/health` endpoint, so 
 
 ### "Postgres connection errors"
 
-Supabase free tier pauses projects after 7 days of inactivity. Trigger any workflow or run any query manually to wake it. If it's been longer than that, Supabase may have suspended the project — check the dashboard.
+The database runs on Neon (migrated from Supabase in Nov 2026). Neon's compute scales to zero when idle and wakes on the next connection, so the first query after a quiet spell is a moment slower; the project itself never pauses. If connections keep failing, check the Neon console for the project status, and that `DATABASE_URL` is the direct (non-`-pooler`) string with `?sslmode=require`.
 
 ### "iPhone calendar not updating"
 
@@ -129,7 +129,7 @@ Treat all credentials as rotatable. Practical timeline:
 - **Strava refresh tokens:** rotate automatically with each token refresh. Update the secret when the workflow logs a rotation warning.
 - **Withings refresh tokens:** rotate on every refresh and are stored in `service_credentials`, so they need no manual upkeep. Re-bootstrap only when the workflow starts failing on auth.
 - **Garmin tokens:** rotate on every refresh and are stored in `service_credentials`, so they need no manual upkeep. Re-bootstrap only when the workflow starts failing on auth.
-- **Supabase database password:** rotate via Supabase dashboard if you ever suspect exposure. Update `DATABASE_URL` secret immediately.
+- **Neon database password:** rotate in the Neon console (**Roles** → reset password) if you ever suspect exposure. Update `DATABASE_URL` immediately in GitHub Secrets, Render, and your local `.env`.
 - **Notion integration token:** stable until you revoke it. If suspected exposure, revoke via Notion settings and generate a new one.
 - **Strava client secret, Withings client secret:** stable. Only rotate if exposed.
 
@@ -149,7 +149,7 @@ python -m training_pipeline.cli compute-derived
 
 The ingestors are idempotent on (source, source_id) so this is safe to re-run.
 
-It is also safe to run while a scheduled sync is in flight. Garmin and Withings each hold a Postgres advisory lock on their stored token: Garmin for the whole sync, Withings only while it refreshes. A second run waits up to 5 minutes for the lock, then fails with `LockNotAvailable` and leaves the running sync's token alone; re-run it once the other finishes. The lock needs `DATABASE_URL` to be a direct or session-mode connection (port 5432), not Supabase's transaction pooler (6543). Garmin recovery is the exception: delete the stored `garmin` row only while no Garmin sync is running, or that sync writes its token straight back.
+It is also safe to run while a scheduled sync is in flight. Garmin and Withings each hold a Postgres advisory lock on their stored token: Garmin for the whole sync, Withings only while it refreshes. A second run waits up to 5 minutes for the lock, then fails with `LockNotAvailable` and leaves the running sync's token alone; re-run it once the other finishes. The lock needs `DATABASE_URL` to be a direct connection, not Neon's pooled `-pooler` endpoint. Garmin recovery is the exception: delete the stored `garmin` row only while no Garmin sync is running, or that sync writes its token straight back.
 
 ---
 
@@ -165,7 +165,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 # Edit .env with your secrets
 
-# Run migrations against your local or Supabase DB
+# Run migrations against your local or Neon DB
 alembic upgrade head
 
 # Run a sync manually
@@ -203,7 +203,7 @@ Patterns to follow: see `strava.py` (simpler OAuth), `withings.py` (refresh on 4
 
 ## Database maintenance
 
-Supabase manages backups automatically on the free tier (7 days of point-in-time recovery). For your own peace of mind:
+Neon's free tier keeps a short restore window (instant restore / point-in-time history; see Neon's plan page for the current length). For anything older, and for your own peace of mind:
 
 ```bash
 # Export everything to a local SQL dump occasionally

@@ -14,7 +14,7 @@ Built solo for personal use. The repo is public so others can fork the architect
 
 ## Stack
 
-Python 3.12 · Postgres on [Supabase](https://supabase.com) (free tier) · GitHub Actions (free for public repos) · Model Context Protocol via [FastMCP](https://github.com/jlowin/fastmcp) · Notion API · Render (free tier, hosts the MCP server) · GitHub Pages (free, hosts the `.ics` calendar)
+Python 3.12 · Postgres on [Neon](https://neon.tech) (free tier) · GitHub Actions (free for public repos) · Model Context Protocol via [FastMCP](https://github.com/jlowin/fastmcp) · Notion API · Render (free tier, hosts the MCP server) · GitHub Pages (free, hosts the `.ics` calendar)
 
 Total cost: $0 at single-user scale.
 
@@ -29,7 +29,7 @@ Total cost: $0 at single-user scale.
              │              │              │
              ▼              ▼              ▼
         ┌─────────────────────────────────────────┐
-        │       Postgres (Supabase free tier)      │
+        │         Postgres (Neon free tier)        │
         │   activities · body_measurements ·       │
         │   daily_summary · manual_logs ·          │
         │   weekly_plans · derived_metrics         │
@@ -57,12 +57,12 @@ The code is already written. To run your own copy you only need to set up your o
 **Setup path:**
 
 1. **Fork this repo** on GitHub, then `git clone` your fork locally.
-2. **Work through `docs/SETUP_MANUAL.md` top to bottom.** It walks every account, OAuth flow, and secret you need: Supabase (database), Strava, Withings, Notion (3 databases), Render (MCP host), GitHub Pages (calendar host), and optionally Garmin. Output: a populated `.env` file locally and a complete set of GitHub Secrets.
+2. **Work through `docs/SETUP_MANUAL.md` top to bottom.** It walks every account, OAuth flow, and secret you need: Neon (database), Strava, Withings, Notion (3 databases), Render (MCP host), GitHub Pages (calendar host), and optionally Garmin. Output: a populated `.env` file locally and a complete set of GitHub Secrets.
 3. **Run the local install + first migration**, per `OPERATIONS.md` → "Local development":
    ```
    python3.12 -m venv .venv && source .venv/bin/activate
    pip install -e ".[dev]"
-   alembic upgrade head        # creates tables in your Supabase project
+   alembic upgrade head        # creates tables in your Neon project
    ```
 4. **Trigger the workflows** in your fork's Actions tab to do the first sync (`sync_strava`, `sync_withings`, etc.). After that they run on schedule.
 5. **Connect the MCP server to Claude.ai** once Render is deployed (SETUP_MANUAL Section 7.4) and create your Project (Section 10).
@@ -79,10 +79,10 @@ Total setup: roughly one weekend of focused account-creation and OAuth dances.
 
 ### Want a lighter version?
 
-The full stack is overkill if you don't need SQL aggregations or derived training-load metrics. A "Notion-only" variant — Notion as the source of truth, no Supabase, no Alembic, simpler MCP — is feasible and would cut setup to a few hours. Not built yet; open an issue if you want to collaborate on it.
+The full stack is overkill if you don't need SQL aggregations or derived training-load metrics. A "Notion-only" variant — Notion as the source of truth, no Postgres, no Alembic, simpler MCP — is feasible and would cut setup to a few hours. Not built yet; open an issue if you want to collaborate on it.
 ## Privacy and data ownership
 
-Your training data lives in your Supabase project. Your credentials live in your `.env` (gitignored) and GitHub Secrets (encrypted at rest). Nothing in this repo is your personal data. Fork freely.
+Your training data lives in your Neon project. Your credentials live in your `.env` (gitignored) and GitHub Secrets (encrypted at rest). Nothing in this repo is your personal data. Fork freely.
 
 ## Acknowledgements
 

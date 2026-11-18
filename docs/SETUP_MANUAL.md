@@ -6,7 +6,7 @@ Follow top to bottom. Each section is independent (you can pause between Strava 
 
 **Required accounts (all free):**
 - GitHub
-- Supabase
+- Neon
 - Strava
 - Withings developer
 - Notion
@@ -68,25 +68,27 @@ You now have the code. The rest of this manual gets you the credentials and exte
 
 ---
 
-## Section 3 — Supabase
+## Section 3 — Neon (database)
 
 ### 3.1 Create the project
 
-1. Go to https://supabase.com → Sign in → New project
-2. Organization: your personal (default)
-3. Project name: `personal-training-mcp`
-4. Database password: generate a strong one, **save it in your password manager** — you'll need it
-5. Region: pick the one closest to you (for you in Norway: `eu-central-1` Frankfurt or `eu-west-1` Ireland)
+1. Go to https://neon.tech → Sign up / Sign in → **New project**
+2. Project name: `personal-training-mcp`
+3. Postgres version: the default
+4. Region: pick the one matching your Render service (Section 7). Render defaults to Oregon, so pick **AWS US West 2 (Oregon)** — keeping the database next to the MCP server keeps queries fast
+5. If asked which features to enable, enable Postgres only (no Neon Auth or other add-ons — the pipeline doesn't use them)
 6. Plan: Free
-7. Click **Create new project** and wait ~2 minutes
+7. Click **Create project** — it's ready in a few seconds
 
 ### 3.2 Copy the connection string
 
-1. In your Supabase project: **Project Settings** (gear icon, bottom left) → **Database**
-2. Find **Connection string** → **URI** tab
-3. Copy the string. It looks like `postgresql://postgres:[YOUR-PASSWORD]@db.xxxxx.supabase.co:5432/postgres`
-4. Replace `[YOUR-PASSWORD]` with the actual password you saved
-5. Note: for use with psycopg, prefix with `postgresql+psycopg://` in `.env`
+1. In your Neon project: **Connect** (top right of the project dashboard)
+2. Turn **Connection pooling** **OFF**, and copy the connection string. The host must **not** contain `-pooler`. It looks like `postgresql://neondb_owner:YOUR-PASSWORD@ep-xxxxx.us-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require`
+3. Change the scheme `postgresql://` to `postgresql+psycopg://` (SQLAlchemy needs it to pick the psycopg driver). Keep the `?sslmode=require&channel_binding=require` query as is
+
+**Why the direct (unpooled) connection:** the Garmin and Withings syncs hold a Postgres advisory lock on their rotating token while they refresh it (see `OPERATIONS.md`). Neon's pooled endpoint runs PgBouncer in transaction mode, which can hand the unlock to a different backend connection and break that lock.
+
+**Optional — the `neon` CLI:** `npm i -g neon`, then `neon login` and `neon env pull` writes the connection strings into `.env` for you. Careful: it puts the **pooled** URL in `DATABASE_URL`. Set `DATABASE_URL` back to the value of `DATABASE_URL_UNPOOLED` (with the `postgresql+psycopg://` scheme) before running anything.
 
 ### 3.3 Create local .env
 
@@ -99,7 +101,7 @@ cp .env.example .env
 Edit `.env` and set:
 
 ```
-DATABASE_URL=postgresql+psycopg://postgres:YOUR-PASSWORD@db.xxxxx.supabase.co:5432/postgres
+DATABASE_URL=postgresql+psycopg://neondb_owner:YOUR-PASSWORD@ep-xxxxx.us-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
 LOG_LEVEL=INFO
 ```
 
@@ -108,12 +110,12 @@ LOG_LEVEL=INFO
 ### 3.4 Add the connection string as a GitHub Secret
 
 1. https://github.com/<your-username>/personal-training-mcp → Settings → Secrets and variables → Actions
-2. **New repository secret** → Name: `DATABASE_URL`, Value: the full connection string with password substituted
+2. **New repository secret** → Name: `DATABASE_URL`, Value: the full `postgresql+psycopg://` connection string from 3.3
 3. Save
 
-### 3.5 Enable required Postgres extensions
+### 3.5 Postgres extensions
 
-In Supabase: **Database** → **Extensions** → search for `pgcrypto` → enable. This gives us `gen_random_uuid()` used in the schema.
+Nothing to enable. The schema uses `gen_random_uuid()`, which is built into Postgres 13+ (Neon runs a newer version).
 
 ---
 
@@ -459,7 +461,7 @@ Use this as a single page to track where you are.
 ```
 [ ] Section 1: macOS / Python 3.12 / git / gh / Claude Code installed
 [ ] Section 2: forked the repo, cloned locally, `pytest` green
-[ ] Section 3: Supabase project + DATABASE_URL in .env and GitHub Secrets
+[ ] Section 3: Neon project + DATABASE_URL in .env and GitHub Secrets
 [ ] One-time install: pip install -e ".[dev]" && alembic upgrade head
 [ ] Section 4: Strava app + refresh token in .env and GitHub Secrets
 [ ] Section 5: Withings developer app, client_id/secret in .env and GitHub Secrets
